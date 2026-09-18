@@ -67,6 +67,41 @@ import { FGStock } from './routes/FGStock';
 import { WIP } from './routes/WIP';
 import { WeeklyDemand } from './routes/WeeklyDemand';
 import { ShortageDetail } from './routes/ShortageDetail';
+import { Hotlist } from './routes/Hotlist';
+import { StockRawMaterial } from './routes/StockRawMaterial';
+import { OutstandingPO } from './routes/OutstandingPO';
+import { NpofMaterials } from './routes/NpofMaterials';
+import { MaterialCalc } from './routes/MaterialCalc';
+
+const materialCalcRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/material-calculation',
+  component: MaterialCalc,
+});
+
+const outstandingPoRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/outstanding-po',
+  component: OutstandingPO,
+});
+
+const npofMaterialsRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/npof-materials',
+  component: NpofMaterials,
+});
+
+const stockRawMaterialRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/stock-raw-material',
+  component: StockRawMaterial,
+});
+
+const hotlistRoute = createRoute({
+  getParentRoute: () => authLayoutRoute,
+  path: '/hotlist',
+  component: Hotlist,
+});
 
 const itemsRoute = createRoute({
   getParentRoute: () => authLayoutRoute,
@@ -115,6 +150,7 @@ const routeTree = rootRoute.addChildren([
   authLayoutRoute.addChildren([
     indexRoute,
     trackingRoute,
+    hotlistRoute,
     itemsRoute,
     dailyScheduleRoute,
     fgStockRoute,
@@ -122,6 +158,10 @@ const routeTree = rootRoute.addChildren([
     usersRoute,
     weeklyDemandRoute,
     shortageDetailRoute,
+    stockRawMaterialRoute,
+    outstandingPoRoute,
+    npofMaterialsRoute,
+    materialCalcRoute,
   ]),
 ]);
 

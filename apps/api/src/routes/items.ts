@@ -134,7 +134,7 @@ export default async function itemsRoutes(server: FastifyInstance) {
     const items = await prisma.item.findMany({
       where: {
         OR: [
-          { itemCode: { contains: q } },
+          { partNumber: { contains: q } },
           { itemName: { contains: q } }
         ]
       },
@@ -160,19 +160,21 @@ export default async function itemsRoutes(server: FastifyInstance) {
     '/api/v1/items',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { itemCode, itemName, unit } = request.body as any;
+      const body = request.body as any;
+      const partNumber = body.partNumber || body.itemCode;
+      const { itemName, unit } = body;
 
-      if (!itemCode || !itemName || !unit) {
-        return reply.code(400).send({ error: 'Bad Request', message: 'itemCode, itemName, and unit are required' });
+      if (!partNumber || !itemName || !unit) {
+        return reply.code(400).send({ error: 'Bad Request', message: 'partNumber, itemName, and unit are required' });
       }
 
-      const existingItem = await prisma.item.findUnique({ where: { itemCode } });
+      const existingItem = await prisma.item.findUnique({ where: { partNumber } });
       if (existingItem) {
-        return reply.code(409).send({ error: 'Conflict', message: 'Item code already exists' });
+        return reply.code(409).send({ error: 'Conflict', message: 'Part number already exists' });
       }
 
       const newItem = await prisma.item.create({
-        data: { itemCode, itemName, unit },
+        data: { partNumber, itemName, unit },
       });
 
       // Audit Log
@@ -196,23 +198,29 @@ export default async function itemsRoutes(server: FastifyInstance) {
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const { itemCode, itemName, unit } = request.body as any;
+      const body = request.body as any;
+      const partNumber = body.partNumber || body.itemCode;
+      const { itemName, unit } = body;
 
       const existingItem = await prisma.item.findUnique({ where: { id } });
       if (!existingItem) {
         return reply.code(404).send({ error: 'Not Found', message: 'Item not found' });
       }
 
-      if (itemCode && itemCode !== existingItem.itemCode) {
-        const codeExists = await prisma.item.findUnique({ where: { itemCode } });
+      if (partNumber && partNumber !== existingItem.partNumber) {
+        const codeExists = await prisma.item.findUnique({ where: { partNumber } });
         if (codeExists) {
-          return reply.code(409).send({ error: 'Conflict', message: 'Item code already exists' });
+          return reply.code(409).send({ error: 'Conflict', message: 'Part number already exists' });
         }
       }
 
       const updatedItem = await prisma.item.update({
         where: { id },
-        data: { itemCode, itemName, unit },
+        data: {
+          ...(partNumber && { partNumber }),
+          ...(itemName && { itemName }),
+          ...(unit && { unit }),
+        },
       });
 
       // Audit Log

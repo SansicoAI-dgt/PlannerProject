@@ -35,12 +35,12 @@ export function Items() {
 
   // 1. Part Numbers / Master Items Form & Edit State
   const [showItemForm, setShowItemForm] = useState(false);
-  const [editingItem, setEditingItem] = useState<{ id: string; itemCode: string; itemName: string; unit: string } | null>(null);
+  const [editingItem, setEditingItem] = useState<{ id: string; partNumber: string; itemName: string; unit: string } | null>(null);
   const [itemFormData, setItemFormData] = useState({ itemCode: '', itemName: '', unit: 'pcs' });
 
   // 1b. Toy Names Form & Edit State
   const [showToyForm, setShowToyForm] = useState(false);
-  const [editingToy, setEditingToy] = useState<{ id: string; itemCode: string; itemName: string; unit: string } | null>(null);
+  const [editingToy, setEditingToy] = useState<{ id: string; partNumber: string; itemName: string; unit: string } | null>(null);
   const [toyFormData, setToyFormData] = useState({ itemCode: '', itemName: '', unit: 'SET' });
 
   const itemUnitOptions = useMemo(() => {
@@ -71,17 +71,17 @@ export function Items() {
 
   // CRUD for Part Numbers & Toy Names
   
-  // Filter items into Part Numbers (itemName === itemCode)
-  const partNumbers = items.filter(item => item.itemCode === item.itemName);
+  // Filter items into Part Numbers (itemName === partNumber)
+  const partNumbers = items.filter(item => item.partNumber === item.itemName);
   const filteredItems = partNumbers.filter(
-    item => item.itemCode.toLowerCase().includes(search.toLowerCase())
+    item => item.partNumber.toLowerCase().includes(search.toLowerCase())
   );
 
-  // Filter items into Toy Names (itemName !== itemCode)
-  const toyNames = items.filter(item => item.itemCode !== item.itemName);
+  // Filter items into Toy Names (itemName !== partNumber)
+  const toyNames = items.filter(item => item.partNumber !== item.itemName);
   const filteredToyNames = toyNames.filter(
     item => item.itemName.toLowerCase().includes(search.toLowerCase()) ||
-            item.itemCode.toLowerCase().includes(search.toLowerCase())
+            item.partNumber.toLowerCase().includes(search.toLowerCase())
   );
 
   // Master Cartons
@@ -97,14 +97,14 @@ export function Items() {
       if (editingItem) {
         await updateItem.mutateAsync({
           id: editingItem.id,
-          itemCode: itemFormData.itemCode,
+          partNumber: itemFormData.itemCode,
           itemName: itemFormData.itemCode, // Keep them identical for Part Numbers
           unit: itemFormData.unit
         });
         setEditingItem(null);
       } else {
         await createItem.mutateAsync({
-          itemCode: itemFormData.itemCode,
+          partNumber: itemFormData.itemCode,
           itemName: itemFormData.itemCode, // Keep them identical for Part Numbers
           unit: itemFormData.unit
         });
@@ -122,7 +122,7 @@ export function Items() {
       if (editingToy) {
         await updateItem.mutateAsync({
           id: editingToy.id,
-          itemCode: toyFormData.itemCode,
+          partNumber: toyFormData.itemCode,
           itemName: toyFormData.itemName,
           unit: toyFormData.unit
         });
@@ -130,7 +130,7 @@ export function Items() {
       } else {
         const randomCode = `PN-${Date.now().toString().slice(-5)}`;
         await createItem.mutateAsync({
-          itemCode: toyFormData.itemCode || randomCode,
+          partNumber: toyFormData.itemCode || randomCode,
           itemName: toyFormData.itemName,
           unit: toyFormData.unit
         });
@@ -374,7 +374,7 @@ export function Items() {
                     {filteredItems.map((item, index) => (
                       <tr key={item.id} className="hover:bg-muted/50 transition-colors">
                         <td className="px-6 py-4">{index + 1}</td>
-                        <td className="px-6 py-4 font-medium">{item.itemCode}</td>
+                        <td className="px-6 py-4 font-medium">{item.partNumber}</td>
                         <td className="px-6 py-4">{item.itemName}</td>
                         <td className="px-6 py-4">
                           <span className="bg-secondary px-2 py-1 rounded text-xs">{item.unit}</span>
@@ -384,7 +384,7 @@ export function Items() {
                             <button
                               onClick={() => {
                                 setEditingItem(item);
-                                setItemFormData({ itemCode: item.itemCode, itemName: item.itemName, unit: item.unit });
+                                setItemFormData({ itemCode: item.partNumber, itemName: item.itemName, unit: item.unit });
                                 setShowItemForm(true);
                               }}
                               className="text-muted-foreground hover:text-primary p-1 rounded-md hover:bg-primary/10 transition-colors"
@@ -527,7 +527,7 @@ export function Items() {
                     {filteredToyNames.map((item, index) => (
                       <tr key={item.id} className="hover:bg-muted/50 transition-colors">
                         <td className="px-6 py-4">{index + 1}</td>
-                        <td className="px-6 py-4 font-mono text-xs">{item.itemCode}</td>
+                        <td className="px-6 py-4 font-mono text-xs">{item.partNumber}</td>
                         <td className="px-6 py-4 font-medium">{item.itemName}</td>
                         <td className="px-6 py-4">
                           <span className="bg-secondary px-2 py-1 rounded text-xs">{item.unit}</span>
@@ -537,7 +537,7 @@ export function Items() {
                             <button
                               onClick={() => {
                                 setEditingToy(item);
-                                setToyFormData({ itemCode: item.itemCode, itemName: item.itemName, unit: item.unit });
+                                setToyFormData({ itemCode: item.partNumber, itemName: item.itemName, unit: item.unit });
                                 setShowToyForm(true);
                               }}
                               className="text-muted-foreground hover:text-primary p-1 rounded-md hover:bg-primary/10 transition-colors"
@@ -574,7 +574,7 @@ export function Items() {
               onClick={() => {
                 setShowMcForm(!showMcForm);
                 setEditingMc(null);
-                setMcFormData({ cartonCode: '', toyNameItemId: toyNames[0]?.id || '', partNumberCode: partNumbers[0]?.itemCode || '' });
+                setMcFormData({ cartonCode: '', toyNameItemId: toyNames[0]?.id || '', partNumberCode: partNumbers[0]?.partNumber || '' });
               }}
               className="bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 rounded-md font-medium text-sm flex items-center space-x-2"
             >
@@ -607,7 +607,7 @@ export function Items() {
                     onChange={e => setMcFormData({...mcFormData, partNumberCode: e.target.value})}
                   >
                     {partNumbers.map(p => (
-                      <option key={p.id} value={p.itemCode}>{p.itemCode}</option>
+                      <option key={p.id} value={p.partNumber}>{p.partNumber}</option>
                     ))}
                   </select>
                 </div>

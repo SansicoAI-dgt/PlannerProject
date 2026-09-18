@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useWeeklyScheduleSummary, useBulkUpsertWeeklySchedule, useUpdateWeeklySchedule, useDeleteWeeklySchedule, useBulkDeleteWeeklySchedule } from '../hooks/useWeeklySchedule';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
-import { Upload, Search, Save, Plus, CalendarRange, Trash2, ChevronLeft, ChevronRight, Calendar, Edit2 } from 'lucide-react';
+import { Upload, Search, Save, Plus, CalendarRange, Trash2, ChevronLeft, ChevronRight, Calendar, Edit2, Folder, ArrowLeft } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useAuthStore } from '../stores/authStore';
 
@@ -124,6 +124,7 @@ export function WeeklyDemand() {
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
   const [importYear, setImportYear] = useState(currentYear);
   const [importSearch, setImportSearch] = useState('');
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   // Manual add form state — uses an actual start date so the entry lines up
   // with the dynamic W1-W26 view (relative to today).
@@ -276,10 +277,27 @@ export function WeeklyDemand() {
     }
   }, [showForm, availableWeeks]);
 
-  const visibleWeeks = useMemo(
-    () => allWeeks.slice(weekPage * WEEKS_PER_PAGE, (weekPage + 1) * WEEKS_PER_PAGE),
-    [allWeeks, weekPage],
-  );
+  const groupedMonths = useMemo(() => {
+    const groups: Record<string, number[]> = {};
+    allWeeks.forEach((w) => {
+      const startStr = weekStartByNumber[w];
+      if (!startStr) return;
+      const monthKey = startStr.substring(0, 7); // yyyy-MM
+      if (!groups[monthKey]) groups[monthKey] = [];
+      groups[monthKey].push(w);
+    });
+    return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [allWeeks, weekStartByNumber]);
+
+  const visibleWeeks = useMemo(() => {
+    if (selectedMonth === 'ALL') {
+      return allWeeks;
+    }
+    if (selectedMonth) {
+      return groupedMonths.find(g => g[0] === selectedMonth)?.[1] || [];
+    }
+    return allWeeks.slice(weekPage * WEEKS_PER_PAGE, (weekPage + 1) * WEEKS_PER_PAGE);
+  }, [allWeeks, weekPage, selectedMonth, groupedMonths]);
   const totalPages = useMemo(() => Math.ceil(allWeeks.length / WEEKS_PER_PAGE), [allWeeks]);
 
   const filteredData = useMemo(() => {
@@ -453,12 +471,12 @@ export function WeeklyDemand() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Part Number</label>
               <SearchableSelect
-                options={items.map((i: any) => ({ value: i.id, label: i.itemCode }))}
+                options={items.map((i: any) => ({ value: i.id, label: i.partNumber }))}
                 value={formData.itemId}
                 onChange={(val) => setFormData({ ...formData, itemId: val })}
                 onAdd={async (search) => {
                   try {
-                    const res = await createItem.mutateAsync({ itemCode: search, itemName: search, unit: 'PCS' }) as any;
+                    const res = await createItem.mutateAsync({ partNumber: search, itemName: search, unit: 'PCS' }) as any;
                     if (res?.data?.id) setFormData(f => ({ ...f, itemId: res.data.id }));
                   } catch (e: any) { alert(e.message); }
                 }}
@@ -468,13 +486,13 @@ export function WeeklyDemand() {
             <div className="space-y-2">
               <label className="text-sm font-medium">Description</label>
               <SearchableSelect
-                options={items.filter((i: any) => i.itemCode !== i.itemName).map((i: any) => ({ value: i.id, label: i.itemName }))}
+                options={items.filter((i: any) => i.partNumber !== i.itemName).map((i: any) => ({ value: i.id, label: i.itemName }))}
                 value={formData.itemId}
                 onChange={(val) => setFormData({ ...formData, itemId: val })}
                 onAdd={async (search) => {
                   try {
                     const code = `PN-${Date.now().toString().slice(-5)}`;
-                    const res = await createItem.mutateAsync({ itemCode: code, itemName: search, unit: 'PCS' }) as any;
+                    const res = await createItem.mutateAsync({ partNumber: code, itemName: search, unit: 'PCS' }) as any;
                     if (res?.data?.id) setFormData(f => ({ ...f, itemId: res.data.id }));
                   } catch (e: any) { alert(e.message); }
                 }}
@@ -517,8 +535,72 @@ export function WeeklyDemand() {
         </div>
       )}
 
-      {/* Main Table */}
-      <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden">
+      {/* Folder View or Table View */}
+      {!selectedMonth ? (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in zoom-in-95 duration-200">
+          {groupedMonths.length === 0 && !isLoading && (
+            <div className="col-span-full py-12 text-center text-muted-foreground border rounded-lg bg-card shadow-sm">
+              <CalendarRange className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
+              <p className="text-base font-semibold">Tidak ada data Demand Plan</p>
+              <p className="text-sm mt-1">Upload excel atau isi demand untuk menambahkan data.</p>
+            </div>
+          )}
+          {allWeeks.length > 0 && (
+            <div
+              onClick={() => setSelectedMonth('ALL')}
+              className="cursor-pointer p-5 border-2 border-indigo-500/30 bg-gradient-to-br from-indigo-500/5 to-purple-500/10 hover:from-indigo-500/10 hover:to-purple-500/20 hover:border-indigo-500/60 rounded-lg transition-all flex items-center gap-4 group shadow-sm relative overflow-hidden"
+            >
+              <div className="p-3 bg-indigo-500/15 rounded-lg group-hover:bg-indigo-500/25 transition-colors">
+                <Folder className="w-8 h-8 text-indigo-600 dark:text-indigo-400 fill-indigo-500/20" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-bold text-foreground group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                    Semua Periode
+                  </h3>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 uppercase tracking-wider">
+                    All
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">{allWeeks.length} Minggu (W{allWeeks[0]} - W{allWeeks[allWeeks.length - 1]})</p>
+              </div>
+            </div>
+          )}
+          {groupedMonths.map(([monthKey, monthWeeks]) => (
+            <div
+              key={monthKey}
+              onClick={() => setSelectedMonth(monthKey)}
+              className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
+            >
+              <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
+                <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-foreground">
+                  {new Date(monthKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+                </h3>
+                <p className="text-xs text-muted-foreground mt-0.5">{monthWeeks.length} Minggu (W{monthWeeks[0]} - W{monthWeeks[monthWeeks.length - 1]})</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+      <>
+        <div className="flex items-center gap-3 mb-2 animate-in fade-in slide-in-from-bottom-2">
+          <button 
+            onClick={() => setSelectedMonth(null)}
+            className="p-2 hover:bg-background rounded-md border text-muted-foreground hover:text-foreground transition-colors shrink-0 bg-card"
+            title="Kembali ke Folder"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          <h3 className="font-semibold text-lg">
+            {selectedMonth === 'ALL' 
+              ? 'Semua Periode (26-Week Demand Plan)' 
+              : new Date(selectedMonth + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+          </h3>
+        </div>
+      <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
         {/* Filter bar */}
         <div className="p-4 border-b bg-muted/10 flex items-center gap-3">
           {isAdmin && selectedItemIds.length > 0 && (
@@ -541,7 +623,7 @@ export function WeeklyDemand() {
               onChange={(e) => { setSearch(e.target.value); setRowPage(0); }}
             />
           </div>
-          {allWeeks.length > 0 && (
+          {allWeeks.length > 0 && !selectedMonth && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span>Week {visibleWeeks[0]}–{visibleWeeks[visibleWeeks.length - 1]}</span>
               <button
@@ -671,7 +753,7 @@ export function WeeklyDemand() {
                       );
                     })}
                     <td className="px-4 py-3 text-right font-bold text-primary">
-                      {row.total.toLocaleString()}
+                      {visibleWeeks.reduce((sum, w) => sum + (row.weeks?.[w]?.quantity || 0), 0).toLocaleString()}
                     </td>
                   </tr>
                 ))
@@ -705,6 +787,8 @@ export function WeeklyDemand() {
           </div>
         )}
       </div>
+      </>
+      )}
 
       {/* Import Modal */}
       {showImport && (

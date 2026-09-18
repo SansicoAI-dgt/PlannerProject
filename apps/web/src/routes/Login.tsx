@@ -43,7 +43,7 @@ export function Login() {
       <div className="w-full max-w-md bg-card border rounded-lg shadow-sm p-8">
         <div className="text-center mb-8">
           <div className="bg-primary text-primary-foreground font-bold text-2xl px-4 py-2 rounded-md inline-block mb-4">
-            ProPlan
+            Digital MRP
           </div>
           <h2 className="text-2xl font-bold tracking-tight">Login Page</h2>
           <p className="text-muted-foreground text-sm mt-2">Enter your credentials to access your account</p>
@@ -55,7 +55,7 @@ export function Login() {
               {error}
             </div>
           )}
-          
+
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="email">Email</label>
             <input
@@ -67,7 +67,7 @@ export function Login() {
               onChange={(e) => setEmail(e.target.value)}
             />
           </div>
-          
+
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="password">Password</label>
             <div className="relative">

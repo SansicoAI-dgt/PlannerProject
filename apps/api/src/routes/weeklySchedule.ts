@@ -63,7 +63,8 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       if (!itemMap[s.itemId]) {
         itemMap[s.itemId] = {
           itemId: s.itemId,
-          itemCode: s.item.itemCode,
+          partNumber: s.item.partNumber,
+          itemCode: s.item.partNumber,
           itemName: s.item.itemName,
           weeks: {},
           total: 0,
@@ -86,19 +87,20 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
     '/api/v1/weekly-schedule',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { year, weekNumber, weekStartDate, weekEndDate, itemId, itemCode, description, quantity, saveMode } =
-        request.body as any;
+      const body = request.body as any;
+      const { year, weekNumber, weekStartDate, weekEndDate, itemId, itemCode, description, quantity, saveMode } = body;
+      const codeToUse = itemCode || body.partNumber;
 
-      if (!year || !weekNumber || !quantity === undefined || (!itemId && !itemCode)) {
+      if (!year || !weekNumber || quantity === undefined || (!itemId && !codeToUse)) {
         return reply.code(400).send({ error: 'Bad Request', message: 'Missing required fields' });
       }
 
       let finalItemId = itemId;
-      if (!finalItemId && itemCode) {
-        let item = await prisma.item.findUnique({ where: { itemCode } });
+      if (!finalItemId && codeToUse) {
+        let item = await prisma.item.findUnique({ where: { partNumber: codeToUse } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: description || itemCode, unit: 'PCS' },
+            data: { partNumber: codeToUse, itemName: description || codeToUse, unit: 'PCS' },
           });
         } else if (description && item.itemName !== description) {
           item = await prisma.item.update({ where: { id: item.id }, data: { itemName: description } });
@@ -176,29 +178,29 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       }
 
       // Fetch all existing items in one query
-      const existingItems = await prisma.item.findMany({ where: { itemCode: { in: uniqueCodes } } });
+      const existingItems = await prisma.item.findMany({ where: { partNumber: { in: uniqueCodes } } });
       const itemCodeToId: Record<string, string> = {};
-      for (const item of existingItems) itemCodeToId[item.itemCode] = item.id;
+      for (const item of existingItems) itemCodeToId[item.partNumber] = item.id;
 
       // Create missing items in one batch
       const missingCodes = uniqueCodes.filter((code) => !itemCodeToId[code]);
       if (missingCodes.length > 0) {
         await prisma.item.createMany({
-          data: missingCodes.map((code) => ({ itemCode: code, itemName: toyNameMap[code] || code, unit: 'PCS' })),
+          data: missingCodes.map((code) => ({ partNumber: code, itemName: toyNameMap[code] || code, unit: 'PCS' })),
           skipDuplicates: true,
         });
-        const newItems = await prisma.item.findMany({ where: { itemCode: { in: missingCodes } } });
-        for (const item of newItems) itemCodeToId[item.itemCode] = item.id;
+        const newItems = await prisma.item.findMany({ where: { partNumber: { in: missingCodes } } });
+        for (const item of newItems) itemCodeToId[item.partNumber] = item.id;
       }
 
       // Update stale item names in parallel (only changed ones)
       const nameUpdates = existingItems.filter(
-        (item) => toyNameMap[item.itemCode] && item.itemName !== toyNameMap[item.itemCode],
+        (item) => toyNameMap[item.partNumber] && item.itemName !== toyNameMap[item.partNumber],
       );
       if (nameUpdates.length > 0) {
         await Promise.all(
           nameUpdates.map((item) =>
-            prisma.item.update({ where: { id: item.id }, data: { itemName: toyNameMap[item.itemCode] } }),
+            prisma.item.update({ where: { id: item.id }, data: { itemName: toyNameMap[item.partNumber] } }),
           ),
         );
       }

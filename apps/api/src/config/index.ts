@@ -1,7 +1,8 @@
 import { config as loadEnv } from 'dotenv';
+import path from 'path';
 
-// Load environment variables
-loadEnv();
+// Load environment variables from root
+loadEnv({ path: path.resolve(__dirname, '../../../../.env'), override: true });
 
 export const config = {
   // Server
@@ -37,6 +38,12 @@ export const config = {
     wip: 120, // 2 minutes
     tracking: 120, // 2 minutes
     items: 1800, // 30 minutes
+  },
+
+  // NPOF External API
+  npofApi: {
+    url: process.env.NPOF_API_URL || 'http://127.0.0.1:8008',
+    key: process.env.NPOF_API_KEY || '',
   },
 };
 

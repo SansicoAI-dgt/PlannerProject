@@ -2,9 +2,18 @@ import React, { useState } from 'react';
 import { useWIPs, useUpsertWIP, useBulkUpsertWIP, useBulkDeleteWIP } from '../hooks/useWIP';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
-import { Settings2, Plus, Save, Upload, Trash2, Search, Filter, Calendar, X } from 'lucide-react';
+import { Settings2, Plus, Save, Upload, Trash2, Search, Filter, Calendar, X, Folder, ArrowLeft } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { format } from 'date-fns';
 import { useAuthStore } from '../stores/authStore';
+
+const WIP_SHEET_LOCATIONS = ['Blister', 'UV', 'Varnish OPP', 'Die Cut'];
+
+function getWipUnit(location: string): 'Sheet' | 'Pcs' {
+  return WIP_SHEET_LOCATIONS.some(l =>
+    location.toLowerCase().includes(l.toLowerCase())
+  ) ? 'Sheet' : 'Pcs';
+}
 
 export function WIP() {
   const { user } = useAuthStore();
@@ -39,25 +48,43 @@ export function WIP() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLocation, setSelectedLocation] = useState('');
   const [selectedDate, setSelectedDate] = useState('');
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   const wips = wipData?.data || [];
   const items = itemsData?.data || [];
 
+  const groupedMonths = React.useMemo(() => {
+    const groups: Record<string, any[]> = {};
+    wips.forEach((wip: any) => {
+      if (!wip.date) return;
+      const monthKey = wip.date.substring(0, 7); // yyyy-MM
+      if (!groups[monthKey]) groups[monthKey] = [];
+      groups[monthKey].push(wip);
+    });
+    return Object.entries(groups).sort((a, b) => b[0].localeCompare(a[0]));
+  }, [wips]);
+
+  const currentMonthWips = selectedMonth
+    ? selectedMonth === 'ALL'
+      ? wips
+      : wips.filter((w: any) => w.date?.startsWith(selectedMonth))
+    : wips;
+
   // Extract unique locations dynamically from current active WIP data
   const activeLocations = React.useMemo(() => {
-    const activeLocs = Array.from(new Set(wips.map((wip: any) => wip.location))).filter(Boolean) as string[];
+    const activeLocs = Array.from(new Set(currentMonthWips.map((wip: any) => wip.location))).filter(Boolean) as string[];
     const defaultLocations = ['Mesin-01', 'Mesin-02', 'Assembly Line', 'QC Station'];
     return activeLocs.length > 0 ? activeLocs : defaultLocations;
-  }, [wips]);
+  }, [currentMonthWips]);
 
   const allLocations = activeLocations;
 
   // Filter WIP data based on search, location, and date inputs
-  const filteredWips = wips.filter((wip: any) => {
+  const filteredWips = currentMonthWips.filter((wip: any) => {
     // Search query matches part number or name
     const matchesSearch = 
       !searchQuery ||
-      wip.item.itemCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      wip.item.partNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
       wip.item.itemName.toLowerCase().includes(searchQuery.toLowerCase());
 
     // Location matches selected filter option
@@ -78,20 +105,18 @@ export function WIP() {
   const groupedWips = React.useMemo(() => {
     const groups: Record<string, any> = {};
     for (const wip of filteredWips) {
-      const key = wip.item.itemCode;
+      const key = wip.item.partNumber;
       if (!groups[key]) {
         groups[key] = {
           id: key,
-          itemCode: wip.item.itemCode,
+          itemCode: wip.item.partNumber,
           itemName: wip.item.itemName,
           locations: {},
-          total: 0,
           ids: [],
           recordedDate: wip.date ? wip.date.split('T')[0] : '',
         };
       }
       groups[key].locations[wip.location] = { id: wip.id, quantity: wip.quantity };
-      groups[key].total += wip.quantity;
       groups[key].ids.push(wip.id);
 
       const wipDateStr = wip.date ? wip.date.split('T')[0] : '';
@@ -269,7 +294,7 @@ export function WIP() {
                 onChange={val => setFormData({...formData, itemId: val})}
                 onAdd={async (search) => {
                   try {
-                    const res = await createItem.mutateAsync({ itemCode: search, itemName: search, unit: 'PCS' }) as any;
+                    const res = await createItem.mutateAsync({ partNumber: search, itemName: search, unit: 'PCS' }) as any;
                     if (res?.data?.id) {
                       setFormData(prev => ({...prev, itemId: res.data.id}));
                     }
@@ -324,8 +349,69 @@ export function WIP() {
         </div>
       )}
 
-      {/* Filters Bar */}
-      <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm flex flex-col md:flex-row gap-4 items-center">
+      {/* Folder View or Table View */}
+      {!selectedMonth ? (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in zoom-in-95 duration-200">
+          {groupedMonths.length === 0 && !loadingWIP && (
+            <div className="col-span-full py-12 text-center text-muted-foreground border rounded-lg bg-card">
+              <Settings2 className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
+              <p className="text-base font-semibold">Tidak ada data WIP</p>
+              <p className="text-sm mt-1">Upload excel atau update status WIP untuk menambahkan data.</p>
+            </div>
+          )}
+          {wips.length > 0 && (
+            <div
+              onClick={() => setSelectedMonth('ALL')}
+              className="cursor-pointer p-5 border-2 border-indigo-500/30 bg-gradient-to-br from-indigo-500/5 to-purple-500/10 hover:from-indigo-500/10 hover:to-purple-500/20 hover:border-indigo-500/60 rounded-lg transition-all flex items-center gap-4 group shadow-sm relative overflow-hidden"
+            >
+              <div className="p-3 bg-indigo-500/15 rounded-lg group-hover:bg-indigo-500/25 transition-colors">
+                <Folder className="w-8 h-8 text-indigo-600 dark:text-indigo-400 fill-indigo-500/20" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-bold text-foreground group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                    Semua Data
+                  </h3>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 uppercase tracking-wider">
+                    All
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">{wips.length} Items (Total)</p>
+              </div>
+            </div>
+          )}
+          {groupedMonths.map(([monthKey, monthRecords]) => (
+            <div
+              key={monthKey}
+              onClick={() => setSelectedMonth(monthKey)}
+              className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
+            >
+              <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
+                <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
+              </div>
+              <div>
+                <h3 className="font-semibold text-foreground">
+                  {format(new Date(monthKey + '-01'), 'MMMM yyyy')}
+                </h3>
+                <p className="text-xs text-muted-foreground mt-0.5">{monthRecords.length} Items</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="flex items-center gap-3 mb-2 animate-in fade-in slide-in-from-bottom-2">
+            <button 
+              onClick={() => setSelectedMonth(null)}
+              className="p-2 hover:bg-background rounded-md border text-muted-foreground hover:text-foreground transition-colors shrink-0 bg-card"
+              title="Kembali ke Folder"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <h3 className="font-semibold text-lg">{selectedMonth === 'ALL' ? 'Semua Data (WIP)' : format(new Date(selectedMonth + '-01'), 'MMMM yyyy')}</h3>
+          </div>
+          {/* Filters Bar */}
+          <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm flex flex-col md:flex-row gap-4 items-center animate-in fade-in slide-in-from-bottom-2">
         {isAdmin && selectedIds.length > 0 && (
           <button 
             onClick={handleDeleteSelected}
@@ -428,19 +514,27 @@ export function WIP() {
                 <th className="px-6 py-3 whitespace-nowrap">Part Number</th>
                 <th className="px-6 py-3 whitespace-nowrap">Recorded Date</th>
                 {activeLocations.map(loc => (
-                  <th key={loc} className="px-6 py-3 text-right whitespace-nowrap">{loc}</th>
+                  <th key={loc} className="px-6 py-3 text-right whitespace-nowrap">
+                    <div>{loc}</div>
+                    <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.2 rounded mt-0.5 normal-case ${
+                      getWipUnit(loc) === 'Sheet'
+                        ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300'
+                        : 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
+                    }`}>
+                      {getWipUnit(loc)}
+                    </span>
+                  </th>
                 ))}
-                <th className="px-6 py-3 text-right whitespace-nowrap">Total WIP</th>
                 {isAdmin && <th className="px-6 py-3 text-center whitespace-nowrap">Actions</th>}
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {loadingWIP ? (
-                <tr><td colSpan={isAdmin ? activeLocations.length + 4 : activeLocations.length + 3} className="p-8 text-center">Loading WIP data...</td></tr>
+                <tr><td colSpan={isAdmin ? activeLocations.length + 4 : activeLocations.length + 2} className="p-8 text-center">Loading WIP data...</td></tr>
               ) : wips.length === 0 ? (
-                <tr><td colSpan={isAdmin ? activeLocations.length + 4 : activeLocations.length + 3} className="p-8 text-center text-muted-foreground">No active WIP recorded.</td></tr>
+                <tr><td colSpan={isAdmin ? activeLocations.length + 4 : activeLocations.length + 2} className="p-8 text-center text-muted-foreground">No active WIP recorded.</td></tr>
               ) : groupedWips.length === 0 ? (
-                <tr><td colSpan={isAdmin ? activeLocations.length + 4 : activeLocations.length + 3} className="p-8 text-center text-muted-foreground">No matching WIP records found for current filters.</td></tr>
+                <tr><td colSpan={isAdmin ? activeLocations.length + 4 : activeLocations.length + 2} className="p-8 text-center text-muted-foreground">No matching WIP records found for current filters.</td></tr>
               ) : (
                 groupedWips.map((group: any) => (
                   <tr key={group.id} className="hover:bg-muted/50 transition-colors">
@@ -472,9 +566,6 @@ export function WIP() {
                         )}
                       </td>
                     ))}
-                    <td className="px-6 py-4 text-right font-bold text-slate-700 dark:text-slate-300 bg-muted/20">
-                      {group.total}
-                    </td>
                     {isAdmin && (
                       <td className="px-6 py-4 text-center">
                         <div className="flex items-center justify-center gap-2">
@@ -498,6 +589,8 @@ export function WIP() {
           </table>
         </div>
       </div>
+        </>
+      )}
 
       {showImportModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">

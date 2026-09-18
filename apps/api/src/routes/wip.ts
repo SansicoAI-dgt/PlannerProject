@@ -77,22 +77,23 @@ export default async function wipRoutes(server: FastifyInstance) {
       }
 
       if (saveMode === 'overwrite') {
-        const uniqueCodes = [...new Set(records.map((r: any) => r.itemCode as string).filter(Boolean))];
-        const existingItems = await prisma.item.findMany({ where: { itemCode: { in: uniqueCodes } } });
+        const uniqueCodes = [...new Set(records.map((r: any) => (r.partNumber || r.itemCode) as string).filter(Boolean))];
+        const existingItems = await prisma.item.findMany({ where: { partNumber: { in: uniqueCodes } } });
         const itemCodeToId: Record<string, string> = {};
-        for (const item of existingItems) itemCodeToId[item.itemCode] = item.id;
+        for (const item of existingItems) itemCodeToId[item.partNumber] = item.id;
 
         const scopeMap = new Map<string, { date: Date; itemsToKeep: { itemId: string, location: string }[] }>();
         for (const r of records) {
-          if (!r.itemCode || !r.location || r.quantity === undefined || !r.date) continue;
+          const code = r.partNumber || r.itemCode;
+          if (!code || !r.location || r.quantity === undefined || !r.date) continue;
           const date = new Date(r.date);
           const key = date.getTime().toString();
           
           if (!scopeMap.has(key)) {
             scopeMap.set(key, { date, itemsToKeep: [] });
           }
-          if (itemCodeToId[r.itemCode]) {
-            scopeMap.get(key)!.itemsToKeep.push({ itemId: itemCodeToId[r.itemCode], location: r.location });
+          if (itemCodeToId[code]) {
+            scopeMap.get(key)!.itemsToKeep.push({ itemId: itemCodeToId[code], location: r.location });
           }
         }
 
@@ -118,13 +119,14 @@ export default async function wipRoutes(server: FastifyInstance) {
 
       const results = [];
       for (const record of records) {
-        const { itemCode, location, quantity, date } = record;
-        if (!itemCode || !location || quantity === undefined || !date) continue;
+        const { itemCode, partNumber, location, quantity, date } = record;
+        const codeToUse = partNumber || itemCode;
+        if (!codeToUse || !location || quantity === undefined || !date) continue;
 
-        let item = await prisma.item.findUnique({ where: { itemCode } });
+        let item = await prisma.item.findUnique({ where: { partNumber: codeToUse } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: itemCode, unit: 'pcs' },
+            data: { partNumber: codeToUse, itemName: codeToUse, unit: 'pcs' },
           });
         }
 

@@ -28,8 +28,8 @@ export function ItemTracking() {
   // Options format for SearchableSelect
   const itemOptions = useMemo(() => {
     return items.map(item => ({
-      value: item.itemCode,
-      label: `${item.itemCode} - ${item.itemName} (${item.unit})`
+      value: item.partNumber,
+      label: `${item.partNumber} - ${item.itemName} (${item.unit})`
     }));
   }, [items]);
 
@@ -42,7 +42,7 @@ export function ItemTracking() {
 
   const selectedItemDetails = useMemo(() => {
     if (!selectedItemCode) return null;
-    return items.find(item => item.itemCode === selectedItemCode);
+    return items.find(item => item.partNumber === selectedItemCode);
   }, [selectedItemCode, items]);
 
   // Calculate percentage of demand covered by FG and WIP for the visual bar

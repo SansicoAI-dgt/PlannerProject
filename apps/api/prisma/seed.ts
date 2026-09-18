@@ -53,16 +53,16 @@ async function main() {
 
   // Create sample items
   const items = [
-    { itemCode: 'PROD-A001', itemName: 'Produk A', unit: 'pcs' },
-    { itemCode: 'PROD-B002', itemName: 'Produk B', unit: 'pcs' },
-    { itemCode: 'PROD-C003', itemName: 'Produk C', unit: 'kg' },
-    { itemCode: 'PROD-D004', itemName: 'Produk D', unit: 'pcs' },
-    { itemCode: 'PROD-E005', itemName: 'Produk E', unit: 'box' },
+    { partNumber: 'PROD-A001', itemName: 'Produk A', unit: 'pcs' },
+    { partNumber: 'PROD-B002', itemName: 'Produk B', unit: 'pcs' },
+    { partNumber: 'PROD-C003', itemName: 'Produk C', unit: 'kg' },
+    { partNumber: 'PROD-D004', itemName: 'Produk D', unit: 'pcs' },
+    { partNumber: 'PROD-E005', itemName: 'Produk E', unit: 'box' },
   ];
 
   for (const item of items) {
     await prisma.item.upsert({
-      where: { itemCode: item.itemCode },
+      where: { partNumber: item.partNumber },
       update: {},
       create: item,
     });

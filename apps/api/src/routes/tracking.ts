@@ -12,7 +12,7 @@ export default async function trackingRoutes(server: FastifyInstance) {
       return reply.code(400).send({ error: 'Bad Request', message: 'item_code and date are required' });
     }
 
-    const item = await prisma.item.findUnique({ where: { itemCode: item_code } });
+    const item = await prisma.item.findUnique({ where: { partNumber: item_code } });
     if (!item) {
       return reply.code(404).send({ error: 'Not Found', message: 'Item not found' });
     }
@@ -108,12 +108,13 @@ export default async function trackingRoutes(server: FastifyInstance) {
       else if (status === 'IN_PRODUCTION') inProductionCount++;
       else if (status === 'SHORTAGE') shortageCount++;
 
-      const mc = mcMap.get(item.itemCode);
+      const mc = mcMap.get(item.partNumber);
       const toyName = mc ? mc.toyNameItem.itemName : '-';
       const masterCarton = mc ? mc.cartonCode : '-';
 
       gapAnalysis.push({
-        itemCode: item.itemCode,
+        partNumber: item.partNumber,
+        itemCode: item.partNumber,
         itemName: item.itemName,
         toyName,
         masterCarton,
@@ -126,7 +127,8 @@ export default async function trackingRoutes(server: FastifyInstance) {
 
       for (const w of wips) {
         wipStatusList.push({
-          itemCode: item.itemCode,
+          partNumber: item.partNumber,
+          itemCode: item.partNumber,
           itemName: item.itemName,
           location: w.location,
           qty: w.quantity,
@@ -223,7 +225,7 @@ export default async function trackingRoutes(server: FastifyInstance) {
       const item = itemMap.get(sched.itemId);
       if (!item) continue;
 
-      const mc = mcMap.get(item.itemCode);
+      const mc = mcMap.get(item.partNumber);
       const toyName = mc ? mc.toyNameItem.itemName : '-';
       const masterCarton = mc ? mc.cartonCode : '-';
 
@@ -270,7 +272,8 @@ export default async function trackingRoutes(server: FastifyInstance) {
           itemId: sched.itemId,
           toyName,
           masterCarton,
-          itemCode: item.itemCode,
+          partNumber: item.partNumber,
+          itemCode: item.partNumber,
           date: sched.date.toISOString().split('T')[0],
           shift: sched.shift,
           dailyDemand,

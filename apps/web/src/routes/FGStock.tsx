@@ -242,11 +242,11 @@ export function FGStock() {
                   {isDropdownOpen && (
                     <div className="absolute z-10 w-full mt-1 bg-popover border border-border rounded-md shadow-lg max-h-60 overflow-y-auto bg-card text-card-foreground">
                       {items.filter(item => 
-                        item.itemCode.toLowerCase().includes(formData.itemCode.toLowerCase()) ||
+                        item.partNumber.toLowerCase().includes(formData.itemCode.toLowerCase()) ||
                         item.itemName.toLowerCase().includes(formData.itemCode.toLowerCase())
                       ).length > 0 ? (
                         items.filter(item => 
-                          item.itemCode.toLowerCase().includes(formData.itemCode.toLowerCase()) ||
+                          item.partNumber.toLowerCase().includes(formData.itemCode.toLowerCase()) ||
                           item.itemName.toLowerCase().includes(formData.itemCode.toLowerCase())
                         ).map(item => (
                           <button
@@ -254,11 +254,11 @@ export function FGStock() {
                             type="button"
                             className="w-full text-left px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground flex flex-col border-b border-border/50 last:border-b-0"
                             onClick={() => {
-                              setFormData({...formData, itemCode: item.itemCode, unit: item.unit});
+                              setFormData({...formData, itemCode: item.partNumber, unit: item.unit});
                               setIsDropdownOpen(false);
                             }}
                           >
-                            <span className="font-semibold">{item.itemCode}</span>
+                            <span className="font-semibold">{item.partNumber}</span>
                             <span className="text-xs text-muted-foreground">{item.itemName}</span>
                           </button>
                         ))
@@ -266,7 +266,7 @@ export function FGStock() {
                         <div className="px-3 py-2 text-sm text-muted-foreground">No matches found</div>
                       )}
                       
-                      {formData.itemCode.trim() !== '' && !items.some(item => item.itemCode.toLowerCase() === formData.itemCode.toLowerCase()) && (
+                      {formData.itemCode.trim() !== '' && !items.some(item => item.partNumber.toLowerCase() === formData.itemCode.toLowerCase()) && (
                         <button
                           type="button"
                           className="w-full text-left px-3 py-2.5 text-sm text-primary hover:bg-primary/10 flex items-center gap-2 font-medium border-t bg-muted/30"
@@ -554,7 +554,7 @@ export function FGStock() {
               if (!quickAddItem.itemCode) return;
               try {
                 await createItem.mutateAsync({
-                  itemCode: quickAddItem.itemCode,
+                  partNumber: quickAddItem.itemCode,
                   itemName: quickAddItem.itemCode, // Set itemName equal to itemCode under the hood
                   unit: formData.unit || 'pcs'
                 });

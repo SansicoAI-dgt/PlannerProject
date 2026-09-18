@@ -1,0 +1,700 @@
+import { useState, useRef, useMemo } from 'react';
+import { useHotlist, useUploadHotlist, useAddManualHotlist, useUpdateHotlist, useDeleteHotlist, useBulkDeleteHotlist, useImportHotlist, type HotlistData } from '../hooks/useHotlist';
+import { FileSpreadsheet, Plus, Upload, Loader2, Search, Pencil, Trash2, X, Check, Save, Folder, ArrowLeft } from 'lucide-react';
+import { format } from 'date-fns';
+
+export function Hotlist() {
+  const { data: hotlistData, isLoading } = useHotlist();
+  const uploadMutation = useUploadHotlist();
+  const importMutation = useImportHotlist();
+  const addManualMutation = useAddManualHotlist();
+  const updateMutation = useUpdateHotlist();
+  const deleteMutation = useDeleteHotlist();
+  const bulkDeleteMutation = useBulkDeleteHotlist();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [previewData, setPreviewData] = useState<Omit<HotlistData, 'id' | 'createdAt' | 'updatedAt'>[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [previewSearchTerm, setPreviewSearchTerm] = useState('');
+  const [previewEditingIndex, setPreviewEditingIndex] = useState<number | null>(null);
+  const [previewEditForm, setPreviewEditForm] = useState({
+    partNumber: '',
+    date: '',
+    biTotal: '',
+  });
+
+  const [isManualOpen, setIsManualOpen] = useState(false);
+  const [manualForm, setManualForm] = useState({
+    partNumber: '',
+    date: format(new Date(), 'yyyy-MM-dd'),
+    biTotal: '',
+  });
+  
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({
+    partNumber: '',
+    date: '',
+    biTotal: '',
+  });
+
+  const [searchTerm, setSearchTerm] = useState('');
+
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    uploadMutation.mutate(file, {
+      onSuccess: (res) => {
+        console.log('Upload response:', res);
+        if (res.data && res.data.length > 0) {
+          setPreviewData(res.data);
+        } else {
+          alert('No valid data found in file.');
+        }
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      },
+      onError: (error: any) => {
+        alert(`Failed to upload file: ${error.message}`);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      }
+    });
+  };
+
+  const handleSaveImport = (mode: 'add' | 'overwrite') => {
+    if (previewData.length === 0) return;
+    
+    let confirmMsg = 'Are you sure you want to add this data?';
+    if (mode === 'overwrite') {
+      confirmMsg = 'WARNING: This will delete ALL existing hotlist data and replace it with the uploaded data. Continue?';
+    }
+
+    if (!window.confirm(confirmMsg)) return;
+
+    importMutation.mutate({ data: previewData, mode }, {
+      onSuccess: () => {
+        alert('Data imported successfully!');
+        setPreviewData([]);
+        setPreviewSearchTerm('');
+        setPreviewEditingIndex(null);
+      },
+      onError: (error: any) => {
+        alert(`Failed to import data: ${error.message}`);
+      }
+    });
+  };
+
+  const handlePreviewEditClick = (index: number, record: Omit<HotlistData, 'id' | 'createdAt' | 'updatedAt'>) => {
+    setPreviewEditingIndex(index);
+    setPreviewEditForm({
+      partNumber: record.partNumber,
+      date: format(new Date(record.date), 'yyyy-MM-dd'),
+      biTotal: record.biTotal.toString(),
+    });
+  };
+
+  const handlePreviewSaveEdit = (index: number) => {
+    if (!previewEditForm.partNumber || !previewEditForm.date || !previewEditForm.biTotal) {
+      alert('Please fill all required fields');
+      return;
+    }
+    const updatedData = [...previewData];
+    updatedData[index] = {
+      ...updatedData[index],
+      partNumber: previewEditForm.partNumber,
+      date: previewEditForm.date,
+      biTotal: parseFloat(previewEditForm.biTotal),
+    };
+    setPreviewData(updatedData);
+    setPreviewEditingIndex(null);
+  };
+
+  const handlePreviewDelete = (index: number) => {
+    if (window.confirm('Are you sure you want to remove this record from the preview?')) {
+      const updatedData = [...previewData];
+      updatedData.splice(index, 1);
+      setPreviewData(updatedData);
+      if (previewEditingIndex === index) setPreviewEditingIndex(null);
+    }
+  };
+
+  const handleManualSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualForm.partNumber || !manualForm.date || !manualForm.biTotal) {
+      alert('Please fill all fields');
+      return;
+    }
+
+    addManualMutation.mutate({
+      partNumber: manualForm.partNumber,
+      date: manualForm.date,
+      biTotal: parseFloat(manualForm.biTotal),
+    }, {
+      onSuccess: () => {
+        setManualForm({
+          partNumber: '',
+          date: format(new Date(), 'yyyy-MM-dd'),
+          biTotal: '',
+        });
+        setIsManualOpen(false);
+      },
+      onError: (error: any) => {
+        alert(`Failed to add record: ${error.message}`);
+      }
+    });
+  };
+
+  const handleEditClick = (record: HotlistData) => {
+    setEditingId(record.id);
+    setEditForm({
+      partNumber: record.partNumber,
+      date: format(new Date(record.date), 'yyyy-MM-dd'),
+      biTotal: record.biTotal.toString(),
+    });
+  };
+
+  const handleSaveEdit = (id: string) => {
+    if (!editForm.partNumber || !editForm.date || !editForm.biTotal) {
+      alert('Please fill all fields');
+      return;
+    }
+
+    updateMutation.mutate({
+      id,
+      data: {
+        partNumber: editForm.partNumber,
+        date: editForm.date,
+        biTotal: parseFloat(editForm.biTotal),
+      }
+    }, {
+      onSuccess: () => {
+        setEditingId(null);
+      },
+      onError: (error: any) => {
+        alert(`Failed to update record: ${error.message}`);
+      }
+    });
+  };
+
+  const handleDelete = (id: string) => {
+    if (window.confirm('Are you sure you want to delete this record?')) {
+      deleteMutation.mutate(id, {
+        onError: (error: any) => {
+          alert(`Failed to delete record: ${error.message}`);
+        }
+      });
+    }
+  };
+
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedIds(filteredRecords.map((r) => r.id));
+    } else {
+      setSelectedIds([]);
+    }
+  };
+
+  const handleSelectOne = (e: React.ChangeEvent<HTMLInputElement>, id: string) => {
+    if (e.target.checked) {
+      setSelectedIds([...selectedIds, id]);
+    } else {
+      setSelectedIds(selectedIds.filter((selectedId) => selectedId !== id));
+    }
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedIds.length === 0) return;
+    if (window.confirm(`Are you sure you want to delete ${selectedIds.length} records?`)) {
+      bulkDeleteMutation.mutate(selectedIds, {
+        onSuccess: () => {
+          setSelectedIds([]);
+        },
+        onError: (error: any) => {
+          alert(`Failed to delete records: ${error.message}`);
+        }
+      });
+    }
+  };
+
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+
+  const records = hotlistData?.data || [];
+  
+  const groupedMonths = useMemo(() => {
+    const groups: Record<string, HotlistData[]> = {};
+    records.forEach(record => {
+      const monthKey = format(new Date(record.date), 'yyyy-MM');
+      if (!groups[monthKey]) groups[monthKey] = [];
+      groups[monthKey].push(record);
+    });
+    return Object.entries(groups).sort((a, b) => b[0].localeCompare(a[0]));
+  }, [records]);
+
+  const currentMonthRecords = selectedMonth
+    ? selectedMonth === 'ALL'
+      ? records
+      : (groupedMonths.find(g => g[0] === selectedMonth)?.[1] || [])
+    : [];
+
+  const filteredRecords = currentMonthRecords.filter(record => 
+    record.partNumber.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  const filteredPreviewData = previewData.filter(record => 
+    record.partNumber.toLowerCase().includes(previewSearchTerm.toLowerCase())
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Page Title & Breadcrumb */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">HOTLIST</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Manage hotlist data for items. Upload from Excel or add manually.
+          </p>
+        </div>
+        
+        <div className="flex gap-2">
+          <input
+            type="file"
+            ref={fileInputRef}
+            className="hidden"
+            accept=".xlsx, .xls, .xlsm"
+            onChange={handleFileUpload}
+          />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploadMutation.isPending || previewData.length > 0}
+            className="flex items-center gap-2 px-4 py-2 bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-md font-medium text-sm transition-colors"
+          >
+            {uploadMutation.isPending ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Upload className="w-4 h-4" />
+            )}
+            Upload Excel
+          </button>
+          
+          <button
+            onClick={() => setIsManualOpen(!isManualOpen)}
+            disabled={previewData.length > 0}
+            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground hover:bg-primary/90 rounded-md font-medium text-sm transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            Isi Manual
+          </button>
+        </div>
+      </div>
+
+      {previewData.length > 0 ? (
+        <div className="bg-card border border-primary/20 rounded-lg shadow-md overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
+          <div className="p-5 border-b bg-primary/5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-bold text-primary flex items-center gap-2">
+                <FileSpreadsheet className="w-5 h-5" />
+                Data Preview
+              </h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                You are about to import <strong>{previewData.length}</strong> records. Please review the data below and choose how to save.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 items-center">
+              <div className="relative w-full sm:w-64 mr-2">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
+                <input type="text" placeholder="Search preview..." className="w-full pl-9 pr-4 py-1.5 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" value={previewSearchTerm} onChange={(e) => setPreviewSearchTerm(e.target.value)} />
+              </div>
+              <button
+                onClick={() => handleSaveImport('add')}
+                disabled={importMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-md font-medium text-sm transition-colors"
+              >
+                {importMutation.isPending && importMutation.variables?.mode === 'add' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Save (Add)
+              </button>
+              <button
+                onClick={() => handleSaveImport('overwrite')}
+                disabled={importMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white hover:bg-red-700 rounded-md font-medium text-sm transition-colors"
+              >
+                {importMutation.isPending && importMutation.variables?.mode === 'overwrite' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                Save (Overwrite)
+              </button>
+              <button
+                onClick={() => setPreviewData([])}
+                disabled={importMutation.isPending}
+                className="flex items-center gap-2 px-4 py-2 bg-muted text-muted-foreground hover:bg-muted/80 rounded-md font-medium text-sm transition-colors"
+              >
+                <X className="w-4 h-4" />
+                Cancel
+              </button>
+            </div>
+          </div>
+          <div className="max-h-[60vh] overflow-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-xs text-muted-foreground uppercase bg-secondary/50 sticky top-0 z-10 shadow-sm">
+                <tr>
+                  <th className="px-6 py-4 font-semibold w-1/3">Part Number</th>
+                  <th className="px-6 py-4 font-semibold">Date</th>
+                  <th className="px-6 py-4 font-semibold">BI Total</th>
+                  <th className="px-6 py-4 font-semibold text-right">Aksi</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {filteredPreviewData.length === 0 ? (
+                   <tr><td colSpan={4} className="px-6 py-8 text-center text-muted-foreground">No matching data found in preview.</td></tr>
+                ) : filteredPreviewData.map((record) => {
+                  const originalIndex = previewData.indexOf(record);
+                  return (
+                    <tr key={originalIndex} className="hover:bg-muted/30 transition-colors">
+                      {previewEditingIndex === originalIndex ? (
+                        <>
+                          <td className="px-6 py-3">
+                            <input type="text" className="w-full h-8 px-2 border rounded text-sm" value={previewEditForm.partNumber} onChange={(e) => setPreviewEditForm({ ...previewEditForm, partNumber: e.target.value })} />
+                          </td>
+                          <td className="px-6 py-3">
+                            <input type="date" className="w-full h-8 px-2 border rounded text-sm" value={previewEditForm.date} onChange={(e) => setPreviewEditForm({ ...previewEditForm, date: e.target.value })} />
+                          </td>
+                          <td className="px-6 py-3">
+                            <input type="number" step="any" className="w-full h-8 px-2 border rounded text-sm" value={previewEditForm.biTotal} onChange={(e) => setPreviewEditForm({ ...previewEditForm, biTotal: e.target.value })} />
+                          </td>
+                          <td className="px-6 py-3 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <button onClick={() => handlePreviewSaveEdit(originalIndex)} className="p-1.5 text-green-600 hover:bg-green-50 rounded">
+                                <Check className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => setPreviewEditingIndex(null)} className="p-1.5 text-muted-foreground hover:bg-muted rounded"><X className="w-4 h-4" /></button>
+                            </div>
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="px-6 py-3 font-semibold text-foreground">
+                            <span className="bg-primary/10 text-primary px-2.5 py-1 rounded text-xs">
+                              {record.partNumber}
+                            </span>
+                          </td>
+                          <td className="px-6 py-3 font-medium">
+                            {format(new Date(record.date), 'dd MMM yyyy')}
+                          </td>
+                          <td className="px-6 py-3">
+                            <span className="font-bold">{record.biTotal.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 })}</span>
+                          </td>
+                          <td className="px-6 py-3 text-right">
+                            <div className="flex items-center justify-end gap-1">
+                              <button onClick={() => handlePreviewEditClick(originalIndex, record)} className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors"><Pencil className="w-4 h-4" /></button>
+                              <button onClick={() => handlePreviewDelete(originalIndex)} className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded transition-colors">
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Manual Entry Form */}
+          {isManualOpen && (
+            <div className="bg-card border rounded-lg p-5 shadow-sm animate-in slide-in-from-top-2">
+              <h2 className="text-sm font-semibold mb-4">Input Hotlist Manual</h2>
+              <form onSubmit={handleManualSubmit} className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase">Part Number</label>
+                  <input
+                    type="text"
+                    className="w-full h-10 px-3 border rounded-md text-sm"
+                    placeholder="e.g. JKG12-4399T"
+                    value={manualForm.partNumber}
+                    onChange={(e) => setManualForm({ ...manualForm, partNumber: e.target.value })}
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase">Date</label>
+                  <input
+                    type="date"
+                    className="w-full h-10 px-3 border rounded-md text-sm"
+                    value={manualForm.date}
+                    onChange={(e) => setManualForm({ ...manualForm, date: e.target.value })}
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase">BI Total</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="w-full h-10 px-3 border rounded-md text-sm"
+                    placeholder="0.00"
+                    value={manualForm.biTotal}
+                    onChange={(e) => setManualForm({ ...manualForm, biTotal: e.target.value })}
+                    required
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    disabled={addManualMutation.isPending}
+                    className="h-10 px-6 bg-primary text-primary-foreground rounded-md font-medium text-sm w-full md:w-auto flex items-center justify-center gap-2"
+                  >
+                    {addManualMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+                    Simpan
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsManualOpen(false)}
+                    className="h-10 px-4 bg-muted text-muted-foreground rounded-md font-medium text-sm"
+                  >
+                    Batal
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* Folder View or Data Table */}
+          {!selectedMonth ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in zoom-in-95 duration-200">
+              {groupedMonths.length === 0 && !isLoading && (
+                <div className="col-span-full py-12 text-center text-muted-foreground border rounded-lg bg-card">
+                  <FileSpreadsheet className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
+                  <p className="text-base font-semibold">Tidak ada data HOTLIST</p>
+                  <p className="text-sm mt-1">Upload excel atau isi manual untuk menambahkan data.</p>
+                </div>
+              )}
+              {records.length > 0 && (
+                <div
+                  onClick={() => setSelectedMonth('ALL')}
+                  className="cursor-pointer p-5 border-2 border-indigo-500/30 bg-gradient-to-br from-indigo-500/5 to-purple-500/10 hover:from-indigo-500/10 hover:to-purple-500/20 hover:border-indigo-500/60 rounded-lg transition-all flex items-center gap-4 group shadow-sm relative overflow-hidden"
+                >
+                  <div className="p-3 bg-indigo-500/15 rounded-lg group-hover:bg-indigo-500/25 transition-colors">
+                    <Folder className="w-8 h-8 text-indigo-600 dark:text-indigo-400 fill-indigo-500/20" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-bold text-foreground group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                        Semua Data
+                      </h3>
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 uppercase tracking-wider">
+                        All
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">{records.length} Items (Total)</p>
+                  </div>
+                </div>
+              )}
+              {groupedMonths.map(([monthKey, monthRecords]) => (
+                <div
+                  key={monthKey}
+                  onClick={() => setSelectedMonth(monthKey)}
+                  className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
+                >
+                  <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
+                    <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-foreground">
+                      {format(new Date(monthKey + '-01'), 'MMMM yyyy')}
+                    </h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">{monthRecords.length} Items</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="bg-card border rounded-lg shadow-sm overflow-hidden flex flex-col animate-in fade-in slide-in-from-bottom-2 duration-200">
+              <div className="p-4 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-muted/20">
+                <div className="flex items-center gap-3 w-full sm:w-auto">
+                  <button 
+                    onClick={() => setSelectedMonth(null)}
+                    className="p-2 hover:bg-background rounded-md border text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                    title="Kembali ke Folder"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                  </button>
+                  <div className="relative w-full sm:w-64">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
+                    <input
+                      type="text"
+                      placeholder={selectedMonth === 'ALL' ? 'Cari di semua data...' : `Cari di ${format(new Date(selectedMonth + '-01'), 'MMM yyyy')}...`}
+                      className="w-full pl-9 pr-4 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                    />
+                  </div>
+                </div>
+              <div className="flex items-center gap-3">
+                {selectedIds.length > 0 && (
+                  <button
+                    onClick={handleBulkDelete}
+                    disabled={bulkDeleteMutation.isPending}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-destructive text-destructive-foreground hover:bg-destructive/90 rounded-md font-medium text-sm transition-colors animate-in fade-in"
+                  >
+                    {bulkDeleteMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                    Hapus ({selectedIds.length})
+                  </button>
+                )}
+                <div className="text-sm font-medium text-muted-foreground bg-background px-3 py-1.5 border rounded-md">
+                  Total Data: {filteredRecords.length}
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead className="text-xs text-muted-foreground uppercase bg-secondary/50">
+                  <tr>
+                    <th className="px-4 py-4 w-12 text-center">
+                      <input 
+                        type="checkbox" 
+                        className="rounded border-gray-300 w-4 h-4"
+                        checked={filteredRecords.length > 0 && selectedIds.length === filteredRecords.length}
+                        onChange={handleSelectAll}
+                      />
+                    </th>
+                    <th className="px-6 py-4 font-semibold w-1/3">Part Number</th>
+                    <th className="px-6 py-4 font-semibold">Date</th>
+                    <th className="px-6 py-4 font-semibold">BI Total</th>
+                    <th className="px-6 py-4 font-semibold text-right">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {isLoading ? (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-12 text-center text-muted-foreground">
+                        <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
+                        <p className="mt-2 text-sm font-medium">Memuat data...</p>
+                      </td>
+                    </tr>
+                  ) : filteredRecords.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-12 text-center text-muted-foreground">
+                        <FileSpreadsheet className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
+                        <p className="text-base font-semibold">Tidak ada data HOTLIST</p>
+                        <p className="text-sm mt-1">Upload excel atau isi manual untuk menambahkan data.</p>
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredRecords.map((record) => (
+                      <tr key={record.id} className="hover:bg-muted/30 transition-colors">
+                        <td className="px-4 py-3 text-center">
+                          <input 
+                            type="checkbox" 
+                            className="rounded border-gray-300 w-4 h-4"
+                            checked={selectedIds.includes(record.id)}
+                            onChange={(e) => handleSelectOne(e, record.id)}
+                          />
+                        </td>
+                        {editingId === record.id ? (
+                          <>
+                            <td className="px-6 py-3">
+                              <input
+                                type="text"
+                                className="w-full h-8 px-2 border rounded text-sm"
+                                value={editForm.partNumber}
+                                onChange={(e) => setEditForm({ ...editForm, partNumber: e.target.value })}
+                              />
+                            </td>
+                            <td className="px-6 py-3">
+                              <input
+                                type="date"
+                                className="w-full h-8 px-2 border rounded text-sm"
+                                value={editForm.date}
+                                onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
+                              />
+                            </td>
+                            <td className="px-6 py-3">
+                              <input
+                                type="number"
+                                step="0.01"
+                                className="w-full h-8 px-2 border rounded text-sm"
+                                value={editForm.biTotal}
+                                onChange={(e) => setEditForm({ ...editForm, biTotal: e.target.value })}
+                              />
+                            </td>
+                            <td className="px-6 py-3 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  onClick={() => handleSaveEdit(record.id)}
+                                  disabled={updateMutation.isPending}
+                                  className="p-1.5 text-green-600 hover:bg-green-50 rounded"
+                                >
+                                  {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                                </button>
+                                <button
+                                  onClick={() => setEditingId(null)}
+                                  className="p-1.5 text-muted-foreground hover:bg-muted rounded"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="px-6 py-3 font-semibold text-foreground">
+                              <span className="bg-primary/10 text-primary px-2.5 py-1 rounded text-xs">
+                                {record.partNumber}
+                              </span>
+                            </td>
+                            <td className="px-6 py-3 font-medium">
+                              <div className="flex flex-col gap-1">
+                                <span>{format(new Date(record.date), 'dd MMM yyyy')}</span>
+                                {record.previousDate && (
+                                  <span className="text-xs text-muted-foreground flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-orange-400"></span>
+                                    Prev: {format(new Date(record.previousDate), 'dd MMM yyyy')}
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-6 py-3">
+                              <span className="font-bold">{record.biTotal.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 })}</span>
+                            </td>
+                            <td className="px-6 py-3 text-right">
+                              <div className="flex items-center justify-end gap-1">
+                                <button
+                                  onClick={() => handleEditClick(record)}
+                                  className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded transition-colors"
+                                  title="Edit"
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => handleDelete(record.id)}
+                                  disabled={deleteMutation.isPending && deleteMutation.variables === record.id}
+                                  className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded transition-colors"
+                                  title="Delete"
+                                >
+                                  {deleteMutation.isPending && deleteMutation.variables === record.id ? (
+                                    <Loader2 className="w-4 h-4 animate-spin text-destructive" />
+                                  ) : (
+                                    <Trash2 className="w-4 h-4" />
+                                  )}
+                                </button>
+                              </div>
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

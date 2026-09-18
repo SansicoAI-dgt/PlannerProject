@@ -117,6 +117,8 @@ export function Users() {
                 value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})}
               >
                 <option value="USER">User (View Only)</option>
+                <option value="PRODUCTION_PLANNER">Production Planner</option>
+                <option value="MATERIAL_PLANNER">Material Planner</option>
                 <option value="ADMIN">Admin (Manage Data)</option>
                 <option value="SUPER_ADMIN">Super Admin (Full Access)</option>
               </select>
@@ -166,10 +168,14 @@ export function Users() {
                       className={`px-2 py-1 rounded text-xs font-bold border-0 outline-none cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
                         user.role === 'SUPER_ADMIN' ? 'bg-destructive/10 text-destructive' :
                         user.role === 'ADMIN' ? 'bg-primary/10 text-primary' :
+                        user.role === 'PRODUCTION_PLANNER' ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300' :
+                        user.role === 'MATERIAL_PLANNER' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300' :
                         'bg-secondary text-foreground'
                       }`}
                     >
-                      <option value="USER">User</option>
+                      <option value="USER">User (View Only)</option>
+                      <option value="PRODUCTION_PLANNER">Production Planner</option>
+                      <option value="MATERIAL_PLANNER">Material Planner</option>
                       <option value="ADMIN">Admin</option>
                       <option value="SUPER_ADMIN">Super Admin</option>
                     </select>

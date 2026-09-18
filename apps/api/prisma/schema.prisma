@@ -33,6 +33,7 @@ model User {
   // Relations
   auditLogs     AuditLog[]
   notifications Notification[]
+  calculationHistories CalculationHistory[]
   fgStocks      FGStock[]
   wips          WIP[]
 
@@ -47,7 +48,7 @@ model User {
 
 model Item {
   id        String   @id @default(cuid())
-  itemCode  String   @unique
+  partNumber  String   @unique
   itemName  String
   unit      String
   createdAt DateTime @default(now())
@@ -60,7 +61,7 @@ model Item {
   wips            WIP[]
   masterCartons   MasterCarton[]
 
-  @@index([itemCode])
+  @@index([partNumber])
   @@index([itemName])
   @@map("items")
 }
@@ -241,4 +242,120 @@ model Notification {
   @@index([userId, isRead])
   @@index([createdAt])
   @@map("notifications")
+}
+
+// ============================================
+// HOTLIST
+// ============================================
+
+model Hotlist {
+  id           String    @id @default(cuid())
+  partNumber   String    @unique
+  date         DateTime  @db.Date
+  previousDate DateTime? @db.Date
+  biTotal      Float
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([partNumber])
+  @@index([date])
+  @@map("hotlists")
+}
+
+// ============================================
+// STOCK RAW MATERIAL
+// ============================================
+
+model StockRawMaterial {
+  id        String   @id @default(cuid())
+  itemDesc  String
+  date      DateTime @db.Date
+  supplier  String?
+  qty       Float
+  unit      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([date])
+  @@map("stock_raw_materials")
+}
+
+// ============================================
+// OUTSTANDING PO
+// ============================================
+
+model OutstandingPO {
+  id               String   @id @default(cuid())
+  planReceivedDate DateTime @db.Date
+  supplierName     String
+  itemDesc         String
+  qtyOrder         Float
+  qtyOrderUnit     String   // "kg", "rim", "sheets"
+  qtyDelivered     Float
+  qtyDeliveredUnit String   // "kg", "rim", "sheets"
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([planReceivedDate])
+  @@map("outstanding_pos")
+}
+
+// ============================================
+// NPOF MATERIALS
+// ============================================
+
+model NpofMaterial {
+  id              String    @id @default(cuid())
+  npofId          Int
+  partNumber      String
+  productName     String
+  material        String?
+  gramatur        String?
+  supplier        String?
+  sheetedSize     String?
+  formulaMaterial String?   @db.Text
+  ups             String?
+  isEdited        Boolean   @default(false)
+  lastSyncedAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([npofId, partNumber])
+  @@index([npofId])
+  @@index([partNumber])
+  @@map("npof_materials")
+}
+
+// Immutable monthly snapshots of material calculations and their source data.
+model CalculationHistory {
+  id             String   @id @default(cuid())
+  monthKey       String   // YYYY-MM folder key
+  periodStartDate DateTime @db.Date
+  periodEndDate   DateTime @db.Date
+  periodWeeks     Int
+  calculatedAt    DateTime
+  savedAt         DateTime @default(now())
+  savedBy         String
+  resultSnapshot  Json
+
+  user    User @relation(fields: [savedBy], references: [id])
+  sources CalculationSourceSnapshot[]
+
+  @@index([monthKey])
+  @@index([savedAt])
+  @@map("calculation_histories")
+}
+
+model CalculationSourceSnapshot {
+  id          String   @id @default(cuid())
+  historyId   String
+  sourceType  String   // MRP, NPOF, StockRawMaterial, WIP, HOTLIST, OutstandingPO
+  dataSnapshot Json
+  createdAt   DateTime @default(now())
+
+  history CalculationHistory @relation(fields: [historyId], references: [id], onDelete: Cascade)
+
+  @@unique([historyId, sourceType])
+  @@index([sourceType])
+  @@map("calculation_source_snapshots")
 }

@@ -17,18 +17,19 @@ export default async function fgStockRoutes(server: FastifyInstance) {
     '/api/v1/fg-stock',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { itemId, itemCode, quantity, date, notes, saveMode, unit } = request.body as any;
+      const { itemId, itemCode, partNumber, quantity, date, notes, saveMode, unit } = request.body as any;
+      const codeToUse = partNumber || itemCode;
 
-      if ((!itemId && !itemCode) || quantity === undefined || !date) {
+      if ((!itemId && !codeToUse) || quantity === undefined || !date) {
         return reply.code(400).send({ error: 'Bad Request', message: 'Missing required fields' });
       }
 
       let finalItemId = itemId;
-      if (!finalItemId && itemCode) {
-        let item = await prisma.item.findUnique({ where: { itemCode } });
+      if (!finalItemId && codeToUse) {
+        let item = await prisma.item.findUnique({ where: { partNumber: codeToUse } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: itemCode, unit: unit || 'pcs' },
+            data: { partNumber: codeToUse, itemName: codeToUse, unit: unit || 'pcs' },
           });
         } else if (unit) {
           item = await prisma.item.update({
@@ -92,22 +93,23 @@ export default async function fgStockRoutes(server: FastifyInstance) {
       }
 
       if (saveMode === 'overwrite') {
-        const uniqueCodes = [...new Set(records.map((r: any) => r.itemCode as string).filter(Boolean))];
-        const existingItems = await prisma.item.findMany({ where: { itemCode: { in: uniqueCodes } } });
+        const uniqueCodes = [...new Set(records.map((r: any) => (r.partNumber || r.itemCode) as string).filter(Boolean))];
+        const existingItems = await prisma.item.findMany({ where: { partNumber: { in: uniqueCodes } } });
         const itemCodeToId: Record<string, string> = {};
-        for (const item of existingItems) itemCodeToId[item.itemCode] = item.id;
+        for (const item of existingItems) itemCodeToId[item.partNumber] = item.id;
 
         const scopeMap = new Map<string, { date: Date; itemIds: Set<string> }>();
         for (const r of records) {
-          if (!r.itemCode || r.quantity === undefined || !r.date) continue;
+          const code = r.partNumber || r.itemCode;
+          if (!code || r.quantity === undefined || !r.date) continue;
           const date = new Date(r.date);
           const key = date.getTime().toString();
           
           if (!scopeMap.has(key)) {
             scopeMap.set(key, { date, itemIds: new Set() });
           }
-          if (itemCodeToId[r.itemCode]) {
-            scopeMap.get(key)!.itemIds.add(itemCodeToId[r.itemCode]);
+          if (itemCodeToId[code]) {
+            scopeMap.get(key)!.itemIds.add(itemCodeToId[code]);
           }
         }
 
@@ -123,13 +125,14 @@ export default async function fgStockRoutes(server: FastifyInstance) {
 
       const results = [];
       for (const record of records) {
-        const { itemCode, quantity, date, unit } = record;
-        if (!itemCode || quantity === undefined || !date) continue;
+        const { itemCode, partNumber, quantity, date, unit } = record;
+        const codeToUse = partNumber || itemCode;
+        if (!codeToUse || quantity === undefined || !date) continue;
 
-        let item = await prisma.item.findUnique({ where: { itemCode } });
+        let item = await prisma.item.findUnique({ where: { partNumber: codeToUse } });
         if (!item) {
           item = await prisma.item.create({
-            data: { itemCode, itemName: itemCode, unit: unit || 'pcs' },
+            data: { partNumber: codeToUse, itemName: codeToUse, unit: unit || 'pcs' },
           });
         } else if (unit) {
           item = await prisma.item.update({
