@@ -35,6 +35,7 @@ model User {
   notifications Notification[]
   calculationHistories CalculationHistory[]
   fgStocks      FGStock[]
+  fgStockHistories FGStockHistory[]
   wips          WIP[]
 
   @@index([email])
@@ -58,6 +59,7 @@ model Item {
   dailySchedules  DailySchedule[]
   weeklySchedules WeeklySchedule[]
   fgStocks        FGStock[]
+  fgStockHistories FGStockHistory[]
   wips            WIP[]
   masterCartons   MasterCarton[]
 
@@ -146,6 +148,26 @@ model FGStock {
   @@index([itemId])
   @@index([date])
   @@map("fg_stocks")
+}
+
+model FGStockHistory {
+  id        String   @id @default(cuid())
+  itemId    String
+  inQty     Float    @default(0)
+  outQty    Float    @default(0)
+  balance   Float
+  type      String
+  date      DateTime @db.Date
+  notes     String?  @db.Text
+  createdBy String
+  createdAt DateTime @default(now())
+
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [createdBy], references: [id])
+
+  @@index([itemId])
+  @@index([date])
+  @@map("fg_stock_history")
 }
 
 // ============================================

@@ -21,7 +21,7 @@ export function Dashboard() {
         item.itemName.toLowerCase().includes(searchQuery.toLowerCase());
 
       // 2. Urgent / Shortage Only Filter
-      const matchesUrgent = !showUrgentOnly || item.status === 'SHORTAGE';
+      const matchesUrgent = !showUrgentOnly || item.status === 'SHORTAGE' || item.status === 'IN_PRODUCTION';
 
       return matchesSearch && matchesUrgent;
     });
@@ -34,7 +34,7 @@ export function Dashboard() {
     if (!data) return { total: 0, fulfilled: 0, inProduction: 0, shortage: 0 };
     
     const baseList = showUrgentOnly
-      ? data.gapAnalysis.filter((item) => item.status === 'SHORTAGE')
+      ? data.gapAnalysis.filter((item) => item.status === 'SHORTAGE' || item.status === 'IN_PRODUCTION')
       : data.gapAnalysis;
 
     const filtered = baseList.filter((item) =>
@@ -44,7 +44,7 @@ export function Dashboard() {
 
     const fulfilled = filtered.filter(i => i.status === 'FULFILLED').length;
     const inProduction = filtered.filter(i => i.status === 'IN_PRODUCTION').length;
-    const shortage = filtered.filter(i => i.status === 'SHORTAGE').length;
+    const shortage = filtered.filter(i => i.status === 'SHORTAGE' || i.status === 'IN_PRODUCTION').length;
 
     return {
       total: filtered.length,
@@ -206,45 +206,57 @@ export function Dashboard() {
             <table className="w-full text-sm text-left">
               <thead className="text-xs text-muted-foreground uppercase bg-secondary/50">
                 <tr>
-                  <th className="px-6 py-3 font-semibold">Toy Name</th>
-                  <th className="px-6 py-3 font-semibold">Master Carton</th>
                   <th className="px-6 py-3 font-semibold">Part Number</th>
                   <th className="px-6 py-3 font-semibold">Description</th>
                   <th className="px-6 py-3 font-semibold text-right">Daily Demand</th>
                   <th className="px-6 py-3 font-semibold text-right">FG Stock</th>
+                  <th className="px-6 py-3 font-semibold text-right text-rose-600 dark:text-rose-400">Daily Shortage</th>
                   <th className="px-6 py-3 font-semibold text-right">WIP</th>
-                  <th className="px-6 py-3 font-semibold text-right">Total Supply</th>
-                  <th className="px-6 py-3 font-semibold text-right text-rose-600 dark:text-rose-400">Immediate Shortage</th>
-                  <th className="px-6 py-3 font-semibold text-right text-destructive">Projected Shortage</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {filteredGapAnalysis.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-6 py-8 text-center text-muted-foreground">
+                    <td colSpan={6} className="px-6 py-8 text-center text-muted-foreground">
                       No shortage details found.
                     </td>
                   </tr>
                 ) : (
                   filteredGapAnalysis.map((item, idx) => {
                     const immediateShortage = item.demand > item.fgStock ? item.demand - item.fgStock : 0;
-                    const projectedShortage = Math.abs(item.gap);
+                    // @ts-ignore
+                    const itemWipDetails = data?.wipStatus?.filter((w: any) => w.partNumber === item.partNumber && w.qty > 0).map((w: any) => ({ location: w.location, quantity: w.qty })) || [];
                     
                     return (
                       <tr key={`${item.itemCode}-${idx}`} className="hover:bg-muted/50 transition-colors">
-                        <td className="px-6 py-4 max-w-[180px] truncate" title={item.toyName}>{item.toyName}</td>
-                        <td className="px-6 py-4 font-medium">{item.masterCarton}</td>
                         <td className="px-6 py-4 font-semibold text-foreground">{item.itemCode}</td>
                         <td className="px-6 py-4 max-w-[240px] truncate" title={item.itemName}>{item.itemName}</td>
                         <td className="px-6 py-4 text-right font-medium">{item.demand.toLocaleString()}</td>
                         <td className="px-6 py-4 text-right font-medium text-green-600 dark:text-green-500">{item.fgStock.toLocaleString()}</td>
-                        <td className="px-6 py-4 text-right font-medium text-amber-500">{item.wip.toLocaleString()}</td>
-                        <td className="px-6 py-4 text-right font-medium text-blue-600 dark:text-blue-500">{(item.fgStock + item.wip).toLocaleString()}</td>
                         <td className="px-6 py-4 text-right font-bold text-rose-600 dark:text-rose-400 bg-rose-500/5">
                           {immediateShortage.toLocaleString()}
                         </td>
-                        <td className="px-6 py-4 text-right font-bold text-destructive bg-destructive/5">
-                          {projectedShortage.toLocaleString()}
+                        <td className="px-6 py-4 text-right font-medium text-amber-500">
+                          <div className="relative group inline-block">
+                            <span className="cursor-help border-b border-dashed border-amber-500/50 pb-0.5">
+                              {item.wip.toLocaleString()}
+                            </span>
+                            {itemWipDetails.length > 0 && (
+                              <div className="absolute top-1/2 right-[100%] mr-3 -translate-y-1/2 hidden group-hover:block w-max min-w-[150px] max-w-xs z-50 text-left">
+                                <div className="bg-popover text-popover-foreground text-xs rounded-md shadow-lg border p-3">
+                                  <div className="font-semibold mb-2 border-b pb-1">WIP Locations</div>
+                                  <ul className="space-y-1.5">
+                                    {itemWipDetails.map((w: any) => (
+                                      <li key={w.location} className="flex justify-between gap-6">
+                                        <span className="text-muted-foreground">{w.location}</span>
+                                        <span className="font-bold text-foreground">{w.quantity.toLocaleString()}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );

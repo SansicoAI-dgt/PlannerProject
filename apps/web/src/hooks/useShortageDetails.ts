@@ -5,13 +5,14 @@ export interface UnifiedShortageRecord {
   itemId: string;
   toyName: string;
   masterCarton: string;
-  itemCode: string;
+  partNumber: string;
   date: string;
   shift: number;
   dailyDemand: number;
   weeklyDemand: number;
   fgStock: number;
   wip: number;
+  wipDetails?: { location: string; quantity: number }[];
   dailyShortage: number;
   weeklyShortage: number;
   status: 'SHORTAGE';

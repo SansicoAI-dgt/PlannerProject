@@ -1,14 +1,14 @@
 import { z } from 'zod';
 
 export const createItemSchema = z.object({
-  itemCode: z.string().min(1, 'Kode item wajib diisi'),
-  itemName: z.string().min(1, 'Nama item wajib diisi'),
+  partNumber: z.string().min(1, 'Part number wajib diisi'),
+  description: z.string().min(1, 'Description wajib diisi'),
   unit: z.string().min(1, 'Satuan wajib diisi'),
 });
 
 export const updateItemSchema = z.object({
-  itemCode: z.string().min(1).optional(),
-  itemName: z.string().min(1).optional(),
+  partNumber: z.string().min(1).optional(),
+  description: z.string().min(1).optional(),
   unit: z.string().min(1).optional(),
 });
 

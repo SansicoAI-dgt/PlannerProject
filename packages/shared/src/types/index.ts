@@ -19,8 +19,8 @@ export interface AuthTokens {
 // Item Types
 export interface Item {
   id: string;
-  itemCode: string;
-  itemName: string;
+  partNumber: string;
+  description: string;
   unit: string;
   createdAt: Date;
   updatedAt: Date;
@@ -32,8 +32,8 @@ export interface DailySchedule {
   date: Date;
   shift: number;
   itemId: string;
-  itemCode: string;
-  itemName: string;
+  partNumber: string;
+  description: string;
   quantity: number;
   unit: string;
   createdAt: Date;
@@ -47,8 +47,8 @@ export interface WeeklySchedule {
   weekStartDate: Date;
   weekEndDate: Date;
   itemId: string;
-  itemCode: string;
-  itemName: string;
+  partNumber: string;
+  description: string;
   quantity: number;
   unit: string;
   createdAt: Date;
@@ -59,8 +59,8 @@ export interface WeeklySchedule {
 export interface FGStock {
   id: string;
   itemId: string;
-  itemCode: string;
-  itemName: string;
+  partNumber: string;
+  description: string;
   quantity: number;
   unit: string;
   date: Date;
@@ -77,8 +77,8 @@ export type WIPStatus = 'IN_PROGRESS' | 'ON_HOLD' | 'DELAYED' | 'COMPLETED';
 export interface WIP {
   id: string;
   itemId: string;
-  itemCode: string;
-  itemName: string;
+  partNumber: string;
+  description: string;
   location: string;
   quantity: number;
   unit: string;
@@ -96,8 +96,8 @@ export interface WIP {
 export type ItemStatus = 'FULFILLED' | 'IN_PRODUCTION' | 'SHORTAGE';
 
 export interface ItemTracking {
-  itemCode: string;
-  itemName: string;
+  partNumber: string;
+  description: string;
   date: Date;
   shift?: number;
   demand: number;
@@ -144,7 +144,7 @@ export interface Notification {
   type: NotificationType;
   title: string;
   message: string;
-  itemCode?: string;
+  partNumber?: string;
   isRead: boolean;
   createdAt: Date;
 }

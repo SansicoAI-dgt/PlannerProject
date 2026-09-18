@@ -23,7 +23,7 @@ export interface StatusCalculationResult {
 export function calculateItemStatus(input: StatusCalculationInput): StatusCalculationResult {
   const { demand, fgStock, wip } = input;
   const totalSupply = fgStock + wip;
-  const gap = totalSupply - demand;
+  const gap = fgStock - demand;
 
   let status: ItemStatus;
 

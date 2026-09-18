@@ -18,6 +18,8 @@ import stockRawMaterialRoutes from './routes/stockRawMaterial';
 import outstandingPoRoutes from './routes/outstandingPo';
 import npofMaterialsRoutes from './routes/npofMaterials';
 import materialCalcRoutes from './routes/materialCalc';
+import historyRoutes from './routes/history';
+import fgStockHistoryRoutes from './routes/fgStockHistory';
 import { startCleanupSchedule, stopCleanupSchedule } from './lib/cleanup';
 import multipart from '@fastify/multipart';
 
@@ -81,6 +83,8 @@ async function registerPlugins() {
   await server.register(outstandingPoRoutes);
   await server.register(npofMaterialsRoutes);
   await server.register(materialCalcRoutes);
+  await server.register(historyRoutes);
+  await server.register(fgStockHistoryRoutes);
 }
 
 // Health check route

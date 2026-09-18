@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useDailySchedules, useUpsertDailySchedule, useBulkUpsertDailySchedule, useBulkDeleteDailySchedule } from '../hooks/useDailySchedule';
 import { useItems, useMasterCartons } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
-import { Calendar, Plus, Save, Upload, Trash2, Search, Edit2 } from 'lucide-react';
+import { Calendar, Plus, Save, Upload, Trash2, Search, Edit2, Layers, Package, Clock } from 'lucide-react';
 // import { format } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { useAuthStore } from '../stores/authStore';
@@ -11,7 +11,7 @@ interface ImportRecord {
   id: string;
   toyName: string;
   masterCarton: string;
-  itemCode: string;
+  partNumber: string;
   date: string;
   shift: number;
   quantity: number;
@@ -40,6 +40,155 @@ function excelSerialToDate(serial: number): string {
   const month = String(d.getUTCMonth() + 1).padStart(2, '0');
   const day = String(d.getUTCDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+/**
+ * Parse DailySchedule.xlsx with a flat table format:
+ *   Row 1 (index 0): Header row — Toy Name | Master Carton | Part Number | Date | Shift 1 | Shift 2 | Shift 3 | Total Quantity
+ *   Row 2+ (index 1+): Data rows
+ *
+ * The parser auto-detects column positions from the header row so the columns
+ * can be in any order and extra columns are safely ignored.
+ */
+function parseFlatDailySchedule(ws: XLSX.WorkSheet): ImportRecord[] {
+  const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+  const results: ImportRecord[] = [];
+
+  // --- Step 1: Find the header row (first row whose cells contain recognizable column names) ---
+  const headerKeywords: Record<string, string[]> = {
+    toyName:      ['toy name', 'toyname', 'toy'],
+    masterCarton: ['master carton', 'mastercarton', 'master'],
+    partNumber:   ['part number', 'partnumber', 'part no', 'partno', 'item code', 'itemcode'],
+    date:         ['date'],
+    shift1:       ['shift 1', 'shift1'],
+    shift2:       ['shift 2', 'shift2'],
+    shift3:       ['shift 3', 'shift3'],
+  };
+
+  let headerRowIdx = -1;
+  const colMap: Record<string, number> = {};
+
+  for (let r = 0; r <= Math.min(5, range.e.r); r++) {
+    const foundCols: Record<string, number> = {};
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const cell = ws[XLSX.utils.encode_cell({ r, c })];
+      if (!cell || cell.v == null) continue;
+      const text = String(cell.v).trim().toLowerCase();
+      for (const [key, keywords] of Object.entries(headerKeywords)) {
+        if (keywords.some(kw => text === kw || text.startsWith(kw))) {
+          foundCols[key] = c;
+        }
+      }
+    }
+    // Consider this a valid header row if we find at least date + one shift
+    if (foundCols.date !== undefined && (foundCols.shift1 !== undefined || foundCols.shift2 !== undefined)) {
+      headerRowIdx = r;
+      Object.assign(colMap, foundCols);
+      break;
+    }
+  }
+
+  if (headerRowIdx === -1) return results; // Not a flat-format sheet
+
+  // --- Step 2: Parse data rows ---
+  let idCounter = 0;
+  for (let r = headerRowIdx + 1; r <= range.e.r; r++) {
+    const getCellVal = (colKey: string): string => {
+      if (colMap[colKey] === undefined) return '';
+      const cell = ws[XLSX.utils.encode_cell({ r, c: colMap[colKey] })];
+      return cell && cell.v != null ? String(cell.v).trim() : '';
+    };
+
+    const getCellNum = (colKey: string): number => {
+      if (colMap[colKey] === undefined) return 0;
+      const cell = ws[XLSX.utils.encode_cell({ r, c: colMap[colKey] })];
+      if (!cell || cell.v == null) return 0;
+      if (typeof cell.v === 'number') return Math.round(cell.v);
+      const cleaned = String(cell.v).replace(/,/g, '').trim();
+      const parsed = parseFloat(cleaned);
+      return isNaN(parsed) ? 0 : Math.round(parsed);
+    };
+
+    const toyName    = getCellVal('toyName');
+    const masterCarton = getCellVal('masterCarton');
+    const partNumber = getCellVal('partNumber');
+    const dateRaw    = getCellVal('date');
+    const shift1     = getCellNum('shift1');
+    const shift2     = getCellNum('shift2');
+    const shift3     = getCellNum('shift3');
+
+    // Skip empty or header-like rows
+    if (!partNumber && !masterCarton && !toyName) continue;
+    if (dateRaw.toLowerCase() === 'date') continue; // duplicate header
+
+    // Parse date — try numeric serial, then string formats
+    let dateStr = '';
+    const dateCell = colMap.date !== undefined ? ws[XLSX.utils.encode_cell({ r, c: colMap.date })] : null;
+    if (dateCell && typeof dateCell.v === 'number' && dateCell.v > 40000) {
+      dateStr = excelSerialToDate(dateCell.v);
+    } else if (dateRaw) {
+      // Try MM/DD/YYYY or M/D/YYYY
+      const slashMatch = dateRaw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+      if (slashMatch) {
+        const month = slashMatch[1].padStart(2, '0');
+        const day   = slashMatch[2].padStart(2, '0');
+        let year    = parseInt(slashMatch[3]);
+        if (year < 100) year += 2000;
+        dateStr = `${year}-${month}-${day}`;
+      } else {
+        // Try D-Mon-YY or D-Mon-YYYY
+        const monMatch = dateRaw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+        if (monMatch) {
+          const day = monMatch[1].padStart(2, '0');
+          const monthMap: Record<string, string> = {
+            jan:'01', feb:'02', mar:'03', apr:'04', may:'05', jun:'06',
+            jul:'07', aug:'08', sep:'09', oct:'10', nov:'11', dec:'12'
+          };
+          const month = monthMap[monMatch[2].toLowerCase()];
+          let year = parseInt(monMatch[3]);
+          if (year < 100) year += 2000;
+          if (month) dateStr = `${year}-${month}-${day}`;
+        } else {
+          // Last resort: use JS Date parser
+          const d = new Date(dateRaw);
+          if (!isNaN(d.getTime())) {
+            dateStr = d.toISOString().split('T')[0];
+          }
+        }
+      }
+    }
+
+    if (!dateStr) continue; // Can't determine date — skip row
+
+    // Use part number if available, else fall back to master carton code
+    const hasPartNumber = partNumber && partNumber !== '0' && partNumber !== '0.0' && partNumber !== '0.00';
+    const finalPartNumber = hasPartNumber ? partNumber : masterCarton;
+    if (!finalPartNumber) continue;
+
+    // Emit one ImportRecord per shift that has quantity > 0
+    const shifts: [number, number][] = [
+      [1, shift1],
+      [2, shift2],
+      [3, shift3],
+    ];
+
+    for (const [shiftNum, qty] of shifts) {
+      if (qty > 0) {
+        idCounter++;
+        results.push({
+          id: `flat-${idCounter}`,
+          toyName,
+          masterCarton,
+          partNumber: finalPartNumber,
+          date: dateStr,
+          shift: shiftNum,
+          quantity: qty,
+        });
+      }
+    }
+  }
+
+  return results;
 }
 
 /**
@@ -72,7 +221,7 @@ function parseFAAttachSheet(ws: XLSX.WorkSheet): ImportRecord[] {
   // Step 2: Extract date and shift columns
   const shiftColumns: { col: number; date: string; shiftNum: number }[] = [];
   
-  for (let c = 3; c <= range.e.c; c++) { // Start from column D (index 3)
+  for (let c = 4; c <= range.e.c; c++) { // Start from column E (index 4)
     // Check for date in the date header row
     const dateCell = ws[XLSX.utils.encode_cell({ r: dateHeaderRow, c })];
     let dateStr = '';
@@ -127,7 +276,7 @@ function parseFAAttachSheet(ws: XLSX.WorkSheet): ImportRecord[] {
         let finalDate = dateStr;
         if (!finalDate) {
           // Look backwards to find the most recent date
-          for (let prevC = c - 1; prevC >= 3; prevC--) {
+          for (let prevC = c - 1; prevC >= 4; prevC--) {
             const prevDateCell = ws[XLSX.utils.encode_cell({ r: dateHeaderRow, c: prevC })];
             if (prevDateCell && prevDateCell.v != null) {
               if (typeof prevDateCell.v === 'number' && prevDateCell.v > 40000) {
@@ -174,7 +323,7 @@ function parseFAAttachSheet(ws: XLSX.WorkSheet): ImportRecord[] {
 
   for (let r = dataStartRow; r <= range.e.r; r++) {
     const cellB = ws[XLSX.utils.encode_cell({ r, c: 1 })]; // Column B
-    const cellC = ws[XLSX.utils.encode_cell({ r, c: 2 })]; // Column C
+    const cellC = ws[XLSX.utils.encode_cell({ r, c: 3 })]; // Column D (Part Number is at index 3)
 
     const colBVal = cellB && cellB.v != null ? String(cellB.v).trim() : '';
     const colCVal = cellC && cellC.v != null ? String(cellC.v).trim() : '';
@@ -217,7 +366,8 @@ function parseFAAttachSheet(ws: XLSX.WorkSheet): ImportRecord[] {
     } else if (colBHasHyphen) {
       // This is a data row - col B is master carton, col C is part number
       const masterCarton = colBVal;
-      const partNumber = colCVal || masterCarton; // Fallback to master carton if no part number
+      const hasPartNumber = colCVal && colCVal !== '0' && colCVal !== '0.0' && colCVal !== '0.00';
+      const partNumber = hasPartNumber ? colCVal : masterCarton; // Fallback to master carton if no part number
 
       // Create records for each shift with quantity > 0
       for (const rq of rowQtys) {
@@ -240,7 +390,7 @@ function parseFAAttachSheet(ws: XLSX.WorkSheet): ImportRecord[] {
             id: `import-${idCounter}`,
             toyName: currentToyName,
             masterCarton,
-            itemCode: partNumber,
+            partNumber: partNumber,
             date: sc.date,
             shift: sc.shiftNum,
             quantity: finalQty,
@@ -283,7 +433,7 @@ export function DailySchedule() {
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split('T')[0],
     shift: 1,
-    itemCode: '',
+    partNumber: '',
     toyName: '',
     masterCarton: '',
     quantity: 100,
@@ -300,8 +450,8 @@ export function DailySchedule() {
       if (filterShift && s.shift !== Number(filterShift)) return false;
       if (!searchQuery) return true;
       const q = searchQuery.toLowerCase();
-      return s.item.itemCode.toLowerCase().includes(q) ||
-             s.item.itemName.toLowerCase().includes(q) ||
+            return s.item.itemCode.toLowerCase().includes(q) ||
+              s.item.itemName.toLowerCase().includes(q) ||
              (s.toyName && s.toyName.toLowerCase().includes(q)) ||
              (s.masterCarton && s.masterCarton.toLowerCase().includes(q)) ||
              s.date.toLowerCase().includes(q) ||
@@ -322,7 +472,7 @@ export function DailySchedule() {
         groups[key] = {
           id: key,
           date: dateStr,
-          itemCode: schedule.item.itemCode,
+          partNumber: schedule.item.itemCode,
           toyName: schedule.toyName || schedule.item.itemName,
           masterCarton: schedule.masterCarton || '-',
           shift1: { id: null, quantity: 0 },
@@ -352,9 +502,9 @@ export function DailySchedule() {
     if (!editModal.data) return;
     try {
       const records = [];
-      if (editModal.data.shift1Qty > 0) records.push({ date: editModal.data.date, shift: 1, itemCode: editModal.data.itemCode, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift1Qty });
-      if (editModal.data.shift2Qty > 0) records.push({ date: editModal.data.date, shift: 2, itemCode: editModal.data.itemCode, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift2Qty });
-      if (editModal.data.shift3Qty > 0) records.push({ date: editModal.data.date, shift: 3, itemCode: editModal.data.itemCode, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift3Qty });
+      if (editModal.data.shift1Qty > 0) records.push({ date: editModal.data.date, shift: 1, itemCode: editModal.data.partNumber, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift1Qty });
+      if (editModal.data.shift2Qty > 0) records.push({ date: editModal.data.date, shift: 2, itemCode: editModal.data.partNumber, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift2Qty });
+      if (editModal.data.shift3Qty > 0) records.push({ date: editModal.data.date, shift: 3, itemCode: editModal.data.partNumber, toyName: editModal.data.toyName, masterCarton: editModal.data.masterCarton === '-' ? '' : editModal.data.masterCarton, quantity: editModal.data.shift3Qty });
 
       if (editModal.data.ids && editModal.data.ids.length > 0) {
         await bulkDeleteSchedule.mutateAsync({ ids: editModal.data.ids });
@@ -401,7 +551,7 @@ export function DailySchedule() {
 
   const handleSubmit = async (e: React.FormEvent, saveMode: 'overwrite' | 'add') => {
     e.preventDefault();
-    if (!formData.itemCode) {
+    if (!formData.partNumber) {
       alert("Please select or enter a Part Number");
       return;
     }
@@ -410,7 +560,7 @@ export function DailySchedule() {
         records: [{
           date: formData.date,
           shift: Number(formData.shift),
-          itemCode: formData.itemCode,
+          itemCode: formData.partNumber,
           toyName: formData.toyName,
           masterCarton: formData.masterCarton,
           quantity: Number(formData.quantity),
@@ -418,7 +568,7 @@ export function DailySchedule() {
         saveMode,
       });
       setShowForm(false);
-      setFormData(prev => ({ ...prev, itemCode: '', toyName: '', masterCarton: '', quantity: 100 }));
+      setFormData(prev => ({ ...prev, partNumber: '', toyName: '', masterCarton: '', quantity: 100 }));
     } catch (err: any) {
       alert(err.message || 'Failed to save schedule');
     }
@@ -434,26 +584,49 @@ export function DailySchedule() {
         const bstr = evt.target?.result;
         const wb = XLSX.read(bstr, { type: 'binary' });
 
-        // Try FA_Attach sheet first, then fallback to first sheet
-        let ws = wb.Sheets['FA_Attach'];
         let parsed: ImportRecord[] = [];
-        
-        if (ws) {
-          parsed = parseFAAttachSheet(ws);
+
+        // Strategy 1: Try every sheet as a flat table (Toy Name | Master Carton | Part Number | Date | Shift 1 | Shift 2 | Shift 3)
+        // This covers DailySchedule.xlsx format
+        for (const sheetName of wb.SheetNames) {
+          const ws = wb.Sheets[sheetName];
+          parsed = parseFlatDailySchedule(ws);
+          if (parsed.length > 0) {
+            console.log(`✅ Flat format detected in sheet "${sheetName}", parsed ${parsed.length} records`);
+            break;
+          }
         }
 
-        // If no FA_Attach or no results, try to parse as simple format
+        // Strategy 2: Fall back to FA_Attach pivot format (NEXT Week Daily Production Schedule.xlsm)
         if (parsed.length === 0) {
-          // Fallback: try any sheet for FA_Attach-like structure
+          const faSheet = wb.Sheets['FA_Attach'];
+          if (faSheet) {
+            parsed = parseFAAttachSheet(faSheet);
+            if (parsed.length > 0) {
+              console.log(`✅ FA_Attach pivot format detected, parsed ${parsed.length} records`);
+            }
+          }
+        }
+
+        // Strategy 3: Try all sheets with FA_Attach pivot parser as last resort
+        if (parsed.length === 0) {
           for (const sheetName of wb.SheetNames) {
-            ws = wb.Sheets[sheetName];
+            const ws = wb.Sheets[sheetName];
             parsed = parseFAAttachSheet(ws);
-            if (parsed.length > 0) break;
+            if (parsed.length > 0) {
+              console.log(`✅ FA_Attach pivot format detected in sheet "${sheetName}", parsed ${parsed.length} records`);
+              break;
+            }
           }
         }
 
         if (parsed.length === 0) {
-          alert('Could not parse the Excel file. Make sure it has the FA_Attach sheet with the correct format (Toy Name header, dates, and Shift 1/2/3 columns).');
+          alert(
+            'Could not parse the Excel file.\n\n' +
+            'Supported formats:\n' +
+            '1. Flat table with columns: Toy Name, Master Carton, Part Number, Date, Shift 1, Shift 2, Shift 3\n' +
+            '2. FA_Attach pivot sheet from NEXT Week Daily Production Schedule.xlsm'
+          );
           return;
         }
 
@@ -474,7 +647,7 @@ export function DailySchedule() {
         records: importData.map(r => ({
           date: r.date,
           shift: r.shift,
-          itemCode: r.itemCode,
+          itemCode: r.partNumber,
           toyName: r.toyName,
           masterCarton: r.masterCarton,
           quantity: r.quantity,
@@ -492,7 +665,7 @@ export function DailySchedule() {
   const filteredImportData = importData.filter(d => {
     if (!importSearch) return true;
     const q = importSearch.toLowerCase();
-    return d.itemCode.toLowerCase().includes(q) ||
+    return d.partNumber.toLowerCase().includes(q) ||
            d.toyName.toLowerCase().includes(q) ||
            (d.masterCarton && d.masterCarton.toLowerCase().includes(q)) ||
            d.date.includes(q);
@@ -501,12 +674,12 @@ export function DailySchedule() {
   const groupedImportData = useMemo(() => {
     const groups: Record<string, any> = {};
     for (const r of filteredImportData) {
-      const key = `${r.date}_${r.itemCode}_${r.masterCarton || ''}`;
+      const key = `${r.date}_${r.partNumber}_${r.masterCarton || ''}`;
       if (!groups[key]) {
         groups[key] = {
           id: key,
           date: r.date,
-          itemCode: r.itemCode,
+          partNumber: r.partNumber,
           toyName: r.toyName,
           masterCarton: r.masterCarton || '-',
           shift1: { id: null, quantity: 0 },
@@ -527,7 +700,7 @@ export function DailySchedule() {
   // Group import data summary
   const importSummary = importData.reduce((acc, r) => {
     acc.totalQty += r.quantity;
-    acc.uniqueParts.add(r.itemCode);
+    acc.uniqueParts.add(r.partNumber);
     acc.dates.add(r.date);
     return acc;
   }, { totalQty: 0, uniqueParts: new Set<string>(), dates: new Set<string>() });
@@ -567,6 +740,73 @@ export function DailySchedule() {
         </div>
       </div>
 
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm flex justify-between items-start">
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-muted-foreground">Running Items</p>
+            <h3 className="text-3xl font-bold tracking-tight text-blue-600 dark:text-blue-400">
+              {groupedSchedules.length}
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Unique items scheduled for production on this date.
+            </p>
+          </div>
+          <div className="p-2 bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-blue-400 rounded-md">
+            <Layers size={20} />
+          </div>
+        </div>
+
+        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm flex justify-between items-start">
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-muted-foreground">Total Demand Qty</p>
+            <h3 className="text-3xl font-bold tracking-tight text-green-600 dark:text-green-400">
+              {groupedSchedules.reduce((acc, g) => acc + g.total, 0).toLocaleString()}
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Total quantity demanded across all shifts and items.
+            </p>
+          </div>
+          <div className="p-2 bg-green-50 dark:bg-green-950 text-green-600 dark:text-green-400 rounded-md">
+            <Package size={20} />
+          </div>
+        </div>
+
+        <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm flex justify-between items-start">
+          <div className="space-y-2 w-full">
+            <p className="text-sm font-medium text-muted-foreground">Shift Breakdown</p>
+            <div className="flex justify-between items-center pt-1">
+              <div>
+                <span className="text-xs text-muted-foreground block">Shift 1</span>
+                <span className="text-lg font-bold text-red-500">
+                  {groupedSchedules.reduce((acc, g) => acc + g.shift1.quantity, 0).toLocaleString()}
+                </span>
+              </div>
+              <div className="border-l h-8 mx-2" />
+              <div>
+                <span className="text-xs text-muted-foreground block">Shift 2</span>
+                <span className="text-lg font-bold text-red-500">
+                  {groupedSchedules.reduce((acc, g) => acc + g.shift2.quantity, 0).toLocaleString()}
+                </span>
+              </div>
+              <div className="border-l h-8 mx-2" />
+              <div>
+                <span className="text-xs text-muted-foreground block">Shift 3</span>
+                <span className="text-lg font-bold text-red-500">
+                  {groupedSchedules.reduce((acc, g) => acc + g.shift3.quantity, 0).toLocaleString()}
+                </span>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Quantity distribution across the three daily shifts.
+            </p>
+          </div>
+          <div className="p-2 bg-red-50 dark:bg-red-950 text-red-500 rounded-md self-start">
+            <Clock size={20} />
+          </div>
+        </div>
+      </div>
+
       {showForm && (
         <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
           <h3 className="font-semibold mb-4 flex items-center gap-2">
@@ -595,7 +835,7 @@ export function DailySchedule() {
                   const mc = masterCartons.find((m: any) => m.cartonCode === val);
                   if (mc) {
                     const matchedToy = items.find((i: any) => i.id === mc.toyNameItemId);
-                    setFormData({...formData, masterCarton: val, itemCode: mc.partNumberCode, toyName: matchedToy ? matchedToy.itemName : formData.toyName});
+                    setFormData({...formData, masterCarton: val, partNumber: mc.partNumberCode, toyName: matchedToy ? matchedToy.itemName : formData.toyName});
                   } else {
                     setFormData({...formData, masterCarton: val});
                   }
@@ -609,9 +849,9 @@ export function DailySchedule() {
               <label className="text-sm font-medium">Part Number</label>
               <SearchableSelect
                 options={items.map((item: any) => ({ value: item.itemCode, label: item.itemCode }))}
-                value={formData.itemCode}
-                onChange={val => setFormData({...formData, itemCode: val})}
-                onAdd={(search) => setFormData({...formData, itemCode: search})}
+                value={formData.partNumber}
+                onChange={val => setFormData({...formData, partNumber: val})}
+                onAdd={(search) => setFormData({...formData, partNumber: search})}
                 placeholder="Select or enter Part Number..."
               />
             </div>
@@ -749,7 +989,7 @@ export function DailySchedule() {
                     )}
                     <td className="px-6 py-4 text-sm text-muted-foreground max-w-[200px] truncate" title={group.toyName}>{group.toyName}</td>
                     <td className="px-6 py-4 text-sm font-medium text-blue-600">{group.masterCarton}</td>
-                    <td className="px-6 py-4 font-medium">{group.itemCode}</td>
+                    <td className="px-6 py-4 font-medium">{group.partNumber === group.masterCarton ? '' : group.partNumber}</td>
                     <td className="px-6 py-4 text-sm">{group.date}</td>
                     <td className="px-6 py-4 text-sm text-right font-bold text-red-500">{group.shift1.quantity > 0 ? group.shift1.quantity : '-'}</td>
                     <td className="px-6 py-4 text-sm text-right font-bold text-red-500">{group.shift2.quantity > 0 ? group.shift2.quantity : '-'}</td>
@@ -764,7 +1004,7 @@ export function DailySchedule() {
                               data: {
                                 ids: group.ids,
                                 date: group.date,
-                                itemCode: group.itemCode,
+                                partNumber: group.partNumber,
                                 toyName: group.toyName,
                                 masterCarton: group.masterCarton,
                                 shift1Qty: group.shift1.quantity,
@@ -807,9 +1047,12 @@ export function DailySchedule() {
             <div className="p-6 flex-1 overflow-auto space-y-4">
               <div className="space-y-2">
                 <p className="text-sm text-muted-foreground">
-                  Upload the <strong>NEXT Week Daily Production Schedule</strong> Excel file (.xlsm / .xlsx). 
-                  The system will automatically parse the <strong>FA_Attach</strong> sheet.
+                  Upload a Daily Schedule Excel file (.xlsx / .xlsm). Two formats are supported:
                 </p>
+                <ul className="text-xs text-muted-foreground list-disc pl-5 space-y-1">
+                  <li><strong>Flat table</strong> — columns: <em>Toy Name, Master Carton, Part Number, Date, Shift 1, Shift 2, Shift 3</em> (e.g. DailySchedule.xlsx)</li>
+                  <li><strong>FA_Attach pivot</strong> — date headers in row 2, shift sub-headers in row 3 (e.g. NEXT Week Daily Production Schedule.xlsm)</li>
+                </ul>
                 <input 
                   type="file" 
                   accept=".xlsx, .xls, .xlsm, .csv" 
@@ -875,17 +1118,17 @@ export function DailySchedule() {
                         {groupedImportData.map((group: any) => {
                           const updateImportQty = (shift: number, qty: number) => {
                             const newData = [...importData];
-                            const idx = newData.findIndex(r => r.date === group.date && r.itemCode === group.itemCode && r.shift === shift && (r.masterCarton || '-') === group.masterCarton);
+                            const idx = newData.findIndex(r => r.date === group.date && r.partNumber === group.partNumber && r.shift === shift && (r.masterCarton || '-') === group.masterCarton);
                             if (idx >= 0) {
                               if (qty === 0) newData.splice(idx, 1);
                               else newData[idx] = { ...newData[idx], quantity: qty };
                             } else if (qty > 0) {
                               newData.push({
-                                id: `manual-${Date.now()}-${shift}`,
-                                toyName: group.toyName,
-                                masterCarton: group.masterCarton === '-' ? '' : group.masterCarton,
-                                itemCode: group.itemCode,
-                                date: group.date,
+                                  id: `manual-${Date.now()}-${shift}`,
+                                  toyName: group.toyName,
+                                  masterCarton: group.masterCarton === '-' ? '' : group.masterCarton,
+                                  partNumber: group.partNumber,
+                                  date: group.date,
                                 shift,
                                 quantity: qty
                               });
@@ -897,7 +1140,7 @@ export function DailySchedule() {
                             <tr key={group.id} className="hover:bg-muted/50">
                               <td className="px-4 py-2 text-xs text-muted-foreground max-w-[160px] truncate" title={group.toyName}>{group.toyName || '-'}</td>
                               <td className="px-4 py-2 text-sm font-medium text-blue-600">{group.masterCarton || '-'}</td>
-                              <td className="px-4 py-2 font-medium">{group.itemCode}</td>
+                              <td className="px-4 py-2 font-medium">{group.partNumber === group.masterCarton ? '' : group.partNumber}</td>
                               <td className="px-4 py-2 text-xs">{group.date}</td>
                               <td className="px-4 py-2 text-right">
                                 <input type="number" min="0" className="w-16 h-8 px-1 border rounded text-right bg-background" value={group.shift1.quantity || 0} onChange={e => updateImportQty(1, Number(e.target.value))} />
@@ -973,7 +1216,10 @@ export function DailySchedule() {
             <form onSubmit={handleEditSubmit} className="space-y-4">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-muted-foreground">Part Number</label>
-                <div className="font-semibold">{editModal.data.itemCode} - {editModal.data.toyName}</div>
+                <div className="font-semibold">
+                  {editModal.data.partNumber === editModal.data.masterCarton ? '' : `${editModal.data.partNumber} - `}
+                  {editModal.data.toyName}
+                </div>
                 <div className="text-sm text-muted-foreground">Date: {editModal.data.date}</div>
               </div>
               <div className="grid grid-cols-3 gap-4">

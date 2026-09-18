@@ -18,15 +18,27 @@ CREATE TABLE `users` (
 -- CreateTable
 CREATE TABLE `items` (
     `id` VARCHAR(191) NOT NULL,
-    `itemCode` VARCHAR(191) NOT NULL,
-    `itemName` VARCHAR(191) NOT NULL,
+    `partNumber` VARCHAR(191) NOT NULL,
+    `description` VARCHAR(191) NOT NULL,
     `unit` VARCHAR(191) NOT NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
 
-    UNIQUE INDEX `items_itemCode_key`(`itemCode`),
-    INDEX `items_itemCode_idx`(`itemCode`),
-    INDEX `items_itemName_idx`(`itemName`),
+    UNIQUE INDEX `items_partNumber_key`(`partNumber`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `master_cartons` (
+    `id` VARCHAR(191) NOT NULL,
+    `cartonCode` VARCHAR(191) NOT NULL,
+    `toyName` VARCHAR(191) NOT NULL,
+    `partNumberCode` VARCHAR(191) NOT NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL,
+
+    UNIQUE INDEX `master_cartons_cartonCode_key`(`cartonCode`),
+    INDEX `master_cartons_partNumberCode_idx`(`partNumberCode`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -76,9 +88,9 @@ CREATE TABLE `fg_stocks` (
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
 
-    UNIQUE INDEX `fg_stocks_itemId_key`(`itemId`),
     INDEX `fg_stocks_itemId_idx`(`itemId`),
     INDEX `fg_stocks_date_idx`(`date`),
+    UNIQUE INDEX `fg_stocks_itemId_date_key`(`itemId`, `date`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -91,7 +103,6 @@ CREATE TABLE `wips` (
     `progressPercent` INTEGER NOT NULL DEFAULT 0,
     `date` DATE NOT NULL,
     `shift` INTEGER NOT NULL,
-    `estimatedFinish` DATE NOT NULL,
     `status` ENUM('IN_PROGRESS', 'ON_HOLD', 'DELAYED', 'COMPLETED') NOT NULL DEFAULT 'IN_PROGRESS',
     `notes` TEXT NULL,
     `updatedBy` VARCHAR(191) NOT NULL,
@@ -102,7 +113,7 @@ CREATE TABLE `wips` (
     INDEX `wips_location_idx`(`location`),
     INDEX `wips_status_idx`(`status`),
     INDEX `wips_date_shift_idx`(`date`, `shift`),
-    UNIQUE INDEX `wips_itemId_location_key`(`itemId`, `location`),
+    UNIQUE INDEX `wips_itemId_location_date_shift_key`(`itemId`, `location`, `date`, `shift`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 

@@ -43,7 +43,7 @@ const dataStartRow = headerRow + 2;
 let currentToyName = '';
 for (let r = dataStartRow; r <= range.e.r; r++) {
   const cellB = ws[XLSX.utils.encode_cell({ r, c: 1 })];
-  const cellC = ws[XLSX.utils.encode_cell({ r, c: 2 })];
+  const cellC = ws[XLSX.utils.encode_cell({ r, c: 3 })]; // Column D (Part Number is at index 3)
   const colBVal = cellB && cellB.v != null ? String(cellB.v).trim() : '';
   const colCVal = cellC && cellC.v != null ? String(cellC.v).trim() : '';
   if (!colBVal && !colCVal) continue;
@@ -53,16 +53,19 @@ for (let r = dataStartRow; r <= range.e.r; r++) {
     const qtyCell = ws[XLSX.utils.encode_cell({ r, c: sc.col })];
     if (qtyCell && typeof qtyCell.v === 'number') totalQty += qtyCell.v;
   }
-  if (colBVal && !colCVal && totalQty === 0) {
+  const isCValEmpty = !colCVal || colCVal === '0' || colCVal === '0.0' || colCVal === '0.00';
+  if (colBVal && isCValEmpty && totalQty === 0) {
     currentToyName = colBVal;
     continue;
   }
-  if (colBVal && colCVal) {
+  if (colBVal) {
+    const hasPartNumber = !isCValEmpty;
+    const partNumber = hasPartNumber ? colCVal : colBVal;
     for (const sc of shiftColumns) {
       const qtyCell = ws[XLSX.utils.encode_cell({ r, c: sc.col })];
       const qty = qtyCell && typeof qtyCell.v === 'number' ? qtyCell.v : 0;
       if (qty > 0) {
-        results.push({ toyName: currentToyName, masterCarton: colBVal, itemCode: colCVal, date: sc.date, shift: sc.shiftNum, quantity: Math.round(qty * 1000) });
+        results.push({ toyName: currentToyName, masterCarton: colBVal, itemCode: partNumber, date: sc.date, shift: sc.shiftNum, quantity: Math.round(qty * 1000) });
       }
     }
   }

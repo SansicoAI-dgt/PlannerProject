@@ -13,7 +13,7 @@ export function ShortageDetail() {
     if (!data?.unifiedShortages) return [];
     return data.unifiedShortages.filter(item => {
       const matchesSearch = 
-        item.itemCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.partNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
         item.toyName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         item.masterCarton.toLowerCase().includes(searchQuery.toLowerCase());
       
@@ -155,32 +155,28 @@ export function ShortageDetail() {
           <table className="w-full text-sm text-left">
             <thead className="text-xs text-muted-foreground uppercase bg-secondary/50">
               <tr>
-                <th className="px-6 py-3 font-semibold">Toy Name</th>
-                <th className="px-6 py-3 font-semibold">Master Carton</th>
                 <th className="px-6 py-3 font-semibold">Part Number</th>
                 <th className="px-6 py-3 font-semibold text-center">Date</th>
                 <th className="px-6 py-3 font-semibold text-center">Shift</th>
                 <th className="px-6 py-3 font-semibold text-right">Daily Demand</th>
                 <th className="px-6 py-3 font-semibold text-right">Weekly Demand</th>
                 <th className="px-6 py-3 font-semibold text-right">FG Stock</th>
-                <th className="px-6 py-3 font-semibold text-right">WIP</th>
                 <th className="px-6 py-3 font-semibold text-right text-destructive">Daily Shortage</th>
                 <th className="px-6 py-3 font-semibold text-right text-destructive">Weekly Shortage</th>
+                <th className="px-6 py-3 font-semibold text-right">WIP</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {filteredShortages.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-6 py-8 text-center text-muted-foreground">
+                  <td colSpan={9} className="px-6 py-8 text-center text-muted-foreground">
                     No shortage details found.
                   </td>
                 </tr>
               ) : (
                 filteredShortages.map((item, idx) => (
-                  <tr key={`${item.itemCode}-${item.shift}-${idx}`} className="hover:bg-muted/50 transition-colors">
-                    <td className="px-6 py-4 max-w-[180px] truncate" title={item.toyName}>{item.toyName}</td>
-                    <td className="px-6 py-4 font-medium">{item.masterCarton}</td>
-                    <td className="px-6 py-4 font-semibold text-foreground">{item.itemCode}</td>
+                  <tr key={`${item.partNumber}-${item.shift}-${idx}`} className="hover:bg-muted/50 transition-colors">
+                    <td className="px-6 py-4 font-semibold text-foreground">{item.partNumber}</td>
                     <td className="px-6 py-4 text-center text-muted-foreground font-medium">{item.date}</td>
                     <td className="px-6 py-4 text-center">
                       <span className="bg-primary/10 text-primary px-2.5 py-1 rounded text-xs font-semibold">
@@ -190,12 +186,33 @@ export function ShortageDetail() {
                     <td className="px-6 py-4 text-right font-medium">{item.dailyDemand.toLocaleString()}</td>
                     <td className="px-6 py-4 text-right font-medium">{item.weeklyDemand.toLocaleString()}</td>
                     <td className="px-6 py-4 text-right font-medium text-green-600 dark:text-green-500">{item.fgStock.toLocaleString()}</td>
-                    <td className="px-6 py-4 text-right font-medium text-amber-500">{item.wip.toLocaleString()}</td>
                     <td className="px-6 py-4 text-right font-bold text-destructive bg-destructive/5">
                       {item.dailyShortage.toLocaleString()}
                     </td>
                     <td className="px-6 py-4 text-right font-bold text-destructive bg-destructive/5">
                       {item.weeklyShortage.toLocaleString()}
+                    </td>
+                    <td className="px-6 py-4 text-right font-medium text-amber-500">
+                      <div className="relative group inline-block">
+                        <span className="cursor-help border-b border-dashed border-amber-500/50 pb-0.5">
+                          {item.wip.toLocaleString()}
+                        </span>
+                        {item.wipDetails && item.wipDetails.length > 0 && (
+                          <div className="absolute top-1/2 right-[100%] mr-3 -translate-y-1/2 hidden group-hover:block w-max min-w-[150px] max-w-xs z-50 text-left">
+                            <div className="bg-popover text-popover-foreground text-xs rounded-md shadow-lg border p-3">
+                              <div className="font-semibold mb-2 border-b pb-1">WIP Locations</div>
+                              <ul className="space-y-1.5">
+                                {item.wipDetails.map(w => (
+                                  <li key={w.location} className="flex justify-between gap-6">
+                                    <span className="text-muted-foreground">{w.location}</span>
+                                    <span className="font-bold text-foreground">{w.quantity.toLocaleString()}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
