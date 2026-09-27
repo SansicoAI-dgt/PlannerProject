@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchApi } from '../lib/api';
+import { PERIOD_QUERY_KEY } from './usePeriods';
 
 export interface WeeklyScheduleRecord {
   itemId: string;
@@ -17,13 +18,16 @@ export interface WeeklyScheduleRecord {
   >;
 }
 
-export function useWeeklyScheduleSummary(year?: number) {
+/**
+ * Ringkasan MRP untuk SATU periode. `periodId` wajib — tanpa itu permintaan
+ * tidak dijalankan supaya demand antar bulan tidak pernah tercampur.
+ */
+export function useWeeklyScheduleSummary(periodId?: string | null) {
   return useQuery<{ data: WeeklyScheduleRecord[]; year: number }, Error>({
-    queryKey: ['weeklySchedule', 'summary', year],
-    queryFn: () => {
-      const params = year ? `?year=${year}` : '';
-      return fetchApi(`/weekly-schedule/summary${params}`);
-    },
+    queryKey: ['weeklySchedule', 'summary', periodId],
+    enabled: Boolean(periodId),
+    queryFn: () =>
+      fetchApi(`/weekly-schedule/summary?periodId=${encodeURIComponent(periodId as string)}`),
     staleTime: 1000 * 60,
   });
 }
@@ -42,6 +46,7 @@ export function useBulkUpsertWeeklySchedule() {
         quantity: number;
       }>;
       saveMode: 'overwrite' | 'add';
+      periodId: string;
     }) =>
       fetchApi('/weekly-schedule/bulk', {
         method: 'POST',
@@ -49,6 +54,7 @@ export function useBulkUpsertWeeklySchedule() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['weeklySchedule'] });
+      queryClient.invalidateQueries({ queryKey: PERIOD_QUERY_KEY });
     },
   });
 }
@@ -95,6 +101,7 @@ export function useUpsertWeeklySchedule() {
       toyName?: string;
       quantity: number;
       saveMode?: 'overwrite' | 'add';
+      periodId: string;
     }) =>
       fetchApi('/weekly-schedule', {
         method: 'POST',
@@ -102,6 +109,7 @@ export function useUpsertWeeklySchedule() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['weeklySchedule'] });
+      queryClient.invalidateQueries({ queryKey: PERIOD_QUERY_KEY });
     },
   });
 }

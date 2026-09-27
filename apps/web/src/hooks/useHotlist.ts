@@ -1,8 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchApi } from '../lib/api';
+import { PERIOD_QUERY_KEY } from './usePeriods';
 
 export interface HotlistData {
   id: string;
+  periodId: string;
   partNumber: string;
   date: string;
   previousDate?: string | null;
@@ -11,11 +13,18 @@ export interface HotlistData {
   updatedAt: string;
 }
 
-export const useHotlist = () => {
+/**
+ * Data Hot List untuk SATU periode. `periodId` wajib — tanpa itu permintaan
+ * tidak dijalankan supaya data antar periode tidak pernah tercampur.
+ */
+export const useHotlist = (periodId?: string | null) => {
   return useQuery({
-    queryKey: ['hotlist'],
+    queryKey: ['hotlist', periodId],
+    enabled: Boolean(periodId),
     queryFn: async () => {
-      const response = await fetchApi<{ data: HotlistData[] }>('/hotlist');
+      const response = await fetchApi<{ data: HotlistData[] }>(
+        `/hotlist?periodId=${encodeURIComponent(periodId as string)}`,
+      );
       return response;
     },
   });
@@ -39,7 +48,7 @@ export const useAddManualHotlist = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: { partNumber: string; date: string; biTotal: number }) => {
+    mutationFn: async (data: { partNumber: string; date: string; biTotal: number; periodId: string }) => {
       const response = await fetchApi<{ data: HotlistData }>('/hotlist', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -48,6 +57,7 @@ export const useAddManualHotlist = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['hotlist'] });
+      queryClient.invalidateQueries({ queryKey: PERIOD_QUERY_KEY });
     },
   });
 };
@@ -89,15 +99,16 @@ export const useImportHotlist = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ data, mode }: { data: Omit<HotlistData, 'id' | 'createdAt' | 'updatedAt'>[], mode: 'add' | 'overwrite' }) => {
+    mutationFn: async ({ data, mode, periodId }: { data: Omit<HotlistData, 'id' | 'periodId' | 'createdAt' | 'updatedAt'>[], mode: 'add' | 'overwrite'; periodId: string }) => {
       const response = await fetchApi<{ message: string; count: number }>('/hotlist/import', {
         method: 'POST',
-        body: JSON.stringify({ data, mode }),
+        body: JSON.stringify({ data, mode, periodId }),
       });
       return response;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['hotlist'] });
+      queryClient.invalidateQueries({ queryKey: PERIOD_QUERY_KEY });
     },
   });
 };

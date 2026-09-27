@@ -17,6 +17,24 @@ import { PrismaClient } from '@prisma/client';
  * Periode uji dibuat lalu DIHAPUS lagi di akhir, jadi tidak meninggalkan sampah.
  */
 
+// ⚠️ SKRIP INI BELUM DIPERBARUI (2026-09-28) — JANGAN DIPAKAI DULU.
+//
+// Alasan:
+//  1. Ia memakai endpoint `POST /material-planning/cycles/:id/import` yang sudah
+//     DIHAPUS. Upload sekarang lewat halaman Master Data:
+//       MRP          -> POST /weekly-schedule/bulk   { records, saveMode, periodId }
+//       HOTLIST      -> POST /hotlist/import         { data, mode, periodId }
+//       STOCK_RM     -> POST /stock-raw-material/import   { data, mode, periodId }
+//       OUTSTANDING_PO -> POST /outstanding-po/import     { data, mode, periodId }
+//       WIP          -> POST /wip/bulk               { records, saveMode, periodId }
+//  2. Fixture di bawah dibaca dari tabel Master Data, yang sejak migrasi
+//     20260928000000_master_data_period SUDAH DIKOSONGKAN. Fixture harus dibuat
+//     sintetis (mis. 3 part x 4 minggu) supaya tes ini jalan di DB kosong.
+//
+// Yang MASIH valid dan berguna untuk dipertahankan: struktur pemeriksaan
+// (check 1..10) — isolasi antar periode, re-upload menimpa bukan menumpuk,
+// tanda STALE, audit, hanya satu hasil current, NPOF tidak tersentuh.
+//
 const API = 'http://localhost:3001/api/v1';
 const EMAIL = 'admin@pdits.com';
 const PASSWORD = 'password123';

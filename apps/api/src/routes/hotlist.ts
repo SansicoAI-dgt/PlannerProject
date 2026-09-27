@@ -1,12 +1,15 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
+import { resolveUploadPeriod, recordPeriodChange, touchPeriod } from '../lib/periodScope';
 import * as xlsx from 'xlsx';
 
 export default async function hotlistRoutes(server: FastifyInstance) {
-  // Get all hotlist items
+  // Get all hotlist items. Bisa difilter per periode: ?periodId=...
   server.get('/api/v1/hotlist', { preValidation: [authenticate] }, async (request, reply) => {
+    const { periodId } = request.query as { periodId?: string };
     const data = await prisma.hotlist.findMany({
+      where: periodId ? { periodId } : undefined,
       orderBy: { date: 'desc' },
     });
     return reply.send({ data });
@@ -105,40 +108,57 @@ export default async function hotlistRoutes(server: FastifyInstance) {
     }
   });
 
-  // Import (Save) with Add or Overwrite mode
+  // Import (Save) dengan mode Add atau Overwrite — WAJIB menyertakan periode.
   server.post('/api/v1/hotlist/import', { preValidation: [authenticate] }, async (request, reply) => {
-    const { data, mode } = request.body as { 
-      data: { partNumber: string; date: string | Date; biTotal: number }[];
-      mode: 'add' | 'overwrite';
+    const body = (request.body || {}) as {
+      data?: { partNumber: string; date: string | Date; biTotal: number }[];
+      mode?: 'add' | 'overwrite';
+      periodId?: string;
+      periodMonth?: string;
+      periodLabel?: string;
+      fileName?: string;
     };
+    const data = body.data;
 
     if (!data || !Array.isArray(data) || data.length === 0) {
       return reply.code(400).send({ error: 'Bad Request', message: 'Valid data array is required' });
     }
 
+    const resolved = await resolveUploadPeriod(body as Record<string, unknown>, request.user!.id);
+    if (!resolved.ok) {
+      return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
+    }
+    const { periodId } = resolved;
+    const mode: 'add' | 'overwrite' = body.mode === 'add' ? 'add' : 'overwrite';
+
     try {
+      const previousCount = await prisma.hotlist.count({ where: { periodId } });
+      let added = 0;
+      let updated = 0;
+
       if (mode === 'overwrite') {
-        // Delete existing records first
-        await prisma.hotlist.deleteMany({});
-        // Convert string dates to Date objects if necessary
-        const recordsToInsert = data.map((record) => ({
-          ...record,
-          date: new Date(record.date),
-        }));
-        await prisma.hotlist.createMany({
-          data: recordsToInsert,
-        });
-        return reply.code(201).send({
-          message: `Successfully overwritten with ${recordsToInsert.length} records.`,
-          count: recordsToInsert.length,
-        });
+        // HANYA periode ini yang dikosongkan. Periode lain tidak tersentuh.
+        await prisma.$transaction(
+          async (tx) => {
+            await tx.hotlist.deleteMany({ where: { periodId } });
+            for (let i = 0; i < data.length; i += 1000) {
+              await tx.hotlist.createMany({
+                data: data.slice(i, i + 1000).map((record) => ({
+                  periodId,
+                  partNumber: record.partNumber,
+                  date: new Date(record.date),
+                  biTotal: record.biTotal,
+                })),
+              });
+            }
+          },
+          { timeout: 180000, maxWait: 30000 },
+        );
+        added = data.length;
       } else {
-        // mode === 'add'
-        let addedCount = 0;
-        let updatedCount = 0;
         for (const record of data) {
           const existing = await prisma.hotlist.findUnique({
-            where: { partNumber: record.partNumber },
+            where: { periodId_partNumber: { periodId, partNumber: record.partNumber } },
           });
 
           if (existing) {
@@ -150,38 +170,65 @@ export default async function hotlistRoutes(server: FastifyInstance) {
                 date: new Date(record.date),
               },
             });
-            updatedCount++;
+            updated++;
           } else {
             await prisma.hotlist.create({
               data: {
-                ...record,
+                periodId,
+                partNumber: record.partNumber,
                 date: new Date(record.date),
+                biTotal: record.biTotal,
               },
             });
-            addedCount++;
+            added++;
           }
         }
-        return reply.code(201).send({
-          message: `Successfully added ${addedCount} records and updated ${updatedCount} records.`,
-          count: addedCount + updatedCount,
-        });
       }
+
+      await recordPeriodChange({
+        periodId,
+        userId: request.user!.id,
+        sourceType: 'HOTLIST',
+        rowCount: mode === 'overwrite' ? data.length : added + updated,
+        replaced: previousCount,
+        fileName: body.fileName ?? null,
+        mode,
+      });
+
+      return reply.code(201).send({
+        message:
+          mode === 'overwrite'
+            ? `Periode "${resolved.label}" ditimpa dengan ${data.length} baris.`
+            : `Ditambahkan ${added} baris, ${updated} baris diperbarui di periode "${resolved.label}".`,
+        count: mode === 'overwrite' ? data.length : added + updated,
+        periodId,
+        label: resolved.label,
+        replaced: previousCount,
+        created: resolved.created,
+      });
     } catch (error) {
       server.log.error(error);
       return reply.code(500).send({ error: 'Internal Server Error', message: 'Failed to import data' });
     }
   });
 
-  // Add Manual
+  // Add Manual — WAJIB menyertakan periode.
   server.post('/api/v1/hotlist', { preValidation: [authenticate] }, async (request, reply) => {
-    const { partNumber, date, biTotal } = request.body as any;
+    const body = (request.body || {}) as any;
+    const { partNumber, date, biTotal } = body;
 
     if (!partNumber || !date || biTotal === undefined) {
       return reply.code(400).send({ error: 'Bad Request', message: 'partNumber, date, and biTotal are required' });
     }
 
+    const resolved = await resolveUploadPeriod(body, request.user!.id);
+    if (!resolved.ok) {
+      return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
+    }
+    const { periodId } = resolved;
+
     const existing = await prisma.hotlist.findUnique({
-      where: { partNumber },
+      where: { periodId_partNumber: { periodId, partNumber } },
     });
 
     let result;
@@ -197,6 +244,7 @@ export default async function hotlistRoutes(server: FastifyInstance) {
     } else {
       result = await prisma.hotlist.create({
         data: {
+          periodId,
           partNumber,
           date: new Date(date),
           biTotal: parseFloat(biTotal),
@@ -204,6 +252,7 @@ export default async function hotlistRoutes(server: FastifyInstance) {
       });
     }
 
+    await touchPeriod(periodId);
     return reply.code(201).send({ data: result });
   });
 
@@ -226,6 +275,7 @@ export default async function hotlistRoutes(server: FastifyInstance) {
       },
     });
 
+    await touchPeriod(existingHotlist.periodId);
     return reply.send({ data: updatedHotlist });
   });
 
@@ -240,6 +290,7 @@ export default async function hotlistRoutes(server: FastifyInstance) {
 
     await prisma.hotlist.delete({ where: { id } });
 
+    await touchPeriod(existingHotlist.periodId);
     return reply.send({ message: 'Hotlist record deleted successfully' });
   });
 
@@ -252,6 +303,10 @@ export default async function hotlistRoutes(server: FastifyInstance) {
     }
 
     try {
+      const affected = await prisma.hotlist.findMany({
+        where: { id: { in: ids } },
+        select: { periodId: true },
+      });
       const result = await prisma.hotlist.deleteMany({
         where: {
           id: {
@@ -259,6 +314,8 @@ export default async function hotlistRoutes(server: FastifyInstance) {
           },
         },
       });
+
+      for (const pid of [...new Set(affected.map((r) => r.periodId))]) await touchPeriod(pid);
 
       return reply.send({ message: `Successfully deleted ${result.count} records.`, count: result.count });
     } catch (error) {

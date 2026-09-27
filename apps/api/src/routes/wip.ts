@@ -1,11 +1,14 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
 import { authenticate, requireRole } from '../middleware/auth';
+import { resolveUploadPeriod, recordPeriodChange, touchPeriod } from '../lib/periodScope';
 
 export default async function wipRoutes(server: FastifyInstance) {
-  // Get all WIPs
+  // Get all WIPs. Bisa difilter per periode: ?periodId=...
   server.get('/api/v1/wip', { preValidation: [authenticate] }, async (request, reply) => {
+    const { periodId } = request.query as { periodId?: string };
     const wips = await prisma.wIP.findMany({
+      where: periodId ? { periodId } : undefined,
       include: { item: true, user: { select: { name: true } } },
     });
     return reply.send({ data: wips });
@@ -16,18 +19,25 @@ export default async function wipRoutes(server: FastifyInstance) {
     '/api/v1/wip',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { itemId, location, quantity, progressPercent, date, shift, status, notes, saveMode } = request.body as any;
+      const body = (request.body || {}) as any;
+      const { itemId, location, quantity, progressPercent, date, shift, status, notes, saveMode } = body;
 
       if (!itemId || !location || quantity === undefined || !date || !shift) {
         return reply.code(400).send({ error: 'Bad Request', message: 'Missing required fields' });
       }
 
+      const resolved = await resolveUploadPeriod(body, request.user!.id);
+      if (!resolved.ok) {
+        return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
+      }
+      const { periodId } = resolved;
+
       const existingWip = await prisma.wIP.findUnique({
-        where: { itemId_location: { itemId, location } },
+        where: { periodId_itemId_location: { periodId, itemId, location } },
       });
 
       const updatedWip = await prisma.wIP.upsert({
-        where: { itemId_location: { itemId, location } },
+        where: { periodId_itemId_location: { periodId, itemId, location } },
         update: {
           quantity: saveMode === 'add' ? (existingWip?.quantity || 0) + parseFloat(quantity) : parseFloat(quantity),
           progressPercent: parseInt(progressPercent || 0),
@@ -38,6 +48,7 @@ export default async function wipRoutes(server: FastifyInstance) {
           updatedBy: request.user!.id,
         },
         create: {
+          periodId,
           itemId,
           location,
           quantity: parseFloat(quantity),
@@ -50,6 +61,7 @@ export default async function wipRoutes(server: FastifyInstance) {
         },
       });
 
+      await touchPeriod(periodId);
       // Audit Log
       await prisma.auditLog.create({
         data: {
@@ -71,10 +83,18 @@ export default async function wipRoutes(server: FastifyInstance) {
     '/api/v1/wip/bulk',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { records, saveMode } = request.body as any;
+      const body = (request.body || {}) as any;
+      const { records, saveMode } = body;
       if (!Array.isArray(records) || records.length === 0) {
         return reply.code(400).send({ error: 'Bad Request', message: 'No records provided' });
       }
+
+      const resolved = await resolveUploadPeriod(body, request.user!.id);
+      if (!resolved.ok) {
+        return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
+      }
+      const { periodId } = resolved;
+      const previousCount = await prisma.wIP.count({ where: { periodId } });
 
       if (saveMode === 'overwrite') {
         const uniqueCodes = [...new Set(records.map((r: any) => (r.partNumber || r.itemCode) as string).filter(Boolean))];
@@ -101,7 +121,7 @@ export default async function wipRoutes(server: FastifyInstance) {
           const keepSet = new Set(scope.itemsToKeep.map(i => `${i.itemId}_${i.location}`));
           
           const wips = await prisma.wIP.findMany({
-            where: { date: scope.date },
+            where: { periodId, date: scope.date },
             select: { id: true, itemId: true, location: true }
           });
           
@@ -131,17 +151,18 @@ export default async function wipRoutes(server: FastifyInstance) {
         }
 
         const existingWip = await prisma.wIP.findUnique({
-          where: { itemId_location: { itemId: item.id, location } },
+          where: { periodId_itemId_location: { periodId, itemId: item.id, location } },
         });
 
         const updatedWip = await prisma.wIP.upsert({
-          where: { itemId_location: { itemId: item.id, location } },
+          where: { periodId_itemId_location: { periodId, itemId: item.id, location } },
           update: {
             quantity: saveMode === 'add' ? (existingWip?.quantity || 0) + parseFloat(quantity) : parseFloat(quantity),
             date: new Date(date),
             updatedBy: request.user!.id,
           },
           create: {
+            periodId,
             itemId: item.id,
             location,
             quantity: parseFloat(quantity),
@@ -164,6 +185,15 @@ export default async function wipRoutes(server: FastifyInstance) {
         });
         results.push(updatedWip);
       }
+
+      await recordPeriodChange({
+        periodId,
+        userId: request.user!.id,
+        sourceType: 'WIP',
+        rowCount: results.length,
+        replaced: previousCount,
+        mode: saveMode === 'add' ? 'add' : 'overwrite',
+      });
 
       return reply.code(200).send({ data: results });
     }
@@ -207,6 +237,7 @@ export default async function wipRoutes(server: FastifyInstance) {
         },
       });
 
+      await touchPeriod(existingWip.periodId);
       return reply.send({ data: updatedWip });
     }
   );
@@ -216,14 +247,23 @@ export default async function wipRoutes(server: FastifyInstance) {
     '/api/v1/wip/bulk',
     { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
     async (request, reply) => {
-      const { ids } = request.body as { ids: string[] };
+      const ids = (request.body as { ids: string[] }).ids;
       if (!Array.isArray(ids) || ids.length === 0) {
         return reply.code(400).send({ error: 'Bad Request', message: 'No ids provided' });
       }
 
+      // Tandai semua periode yang datanya ikut terhapus.
+      const affected = await prisma.wIP.findMany({
+        where: { id: { in: ids } },
+        select: { periodId: true },
+      });
+      const periodIds = [...new Set(affected.map((w) => w.periodId))];
+
       await prisma.wIP.deleteMany({
         where: { id: { in: ids } },
       });
+
+      for (const periodId of periodIds) await touchPeriod(periodId);
 
       await prisma.auditLog.create({
         data: {
@@ -252,6 +292,8 @@ export default async function wipRoutes(server: FastifyInstance) {
       }
 
       await prisma.wIP.delete({ where: { id } });
+
+      await touchPeriod(existingWip.periodId);
 
       await prisma.auditLog.create({
         data: {

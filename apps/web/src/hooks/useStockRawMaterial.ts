@@ -1,8 +1,10 @@
 ﻿import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchApi } from '../lib/api';
+import { PERIOD_QUERY_KEY } from './usePeriods';
 
 export interface StockRawMaterialData {
   id: string;
+  periodId: string;
   itemDesc: string;
   supplier: string | null;
   unit: string;
@@ -12,11 +14,18 @@ export interface StockRawMaterialData {
   updatedAt: string;
 }
 
-export const useStockRawMaterial = () => {
+/**
+ * Data stok untuk SATU periode. `periodId` wajib — tanpa itu permintaan tidak
+ * dijalankan supaya stok antar periode tidak pernah tercampur.
+ */
+export const useStockRawMaterial = (periodId?: string | null) => {
   return useQuery({
-    queryKey: ['stockRawMaterial'],
+    queryKey: ['stockRawMaterial', periodId],
+    enabled: Boolean(periodId),
     queryFn: async () => {
-      const response = await fetchApi<{ data: StockRawMaterialData[] }>('/stock-raw-material');
+      const response = await fetchApi<{ data: StockRawMaterialData[] }>(
+        `/stock-raw-material?periodId=${encodeURIComponent(periodId as string)}`,
+      );
       return response;
     },
   });
@@ -40,7 +49,7 @@ export const useAddManualStockRawMaterial = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: { itemDesc: string; supplier: string; unit: string; qty: number; date: string }) => {
+    mutationFn: async (data: { itemDesc: string; supplier: string; unit: string; qty: number; date: string; periodId: string }) => {
       const response = await fetchApi<{ data: StockRawMaterialData }>('/stock-raw-material', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -49,6 +58,7 @@ export const useAddManualStockRawMaterial = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['stockRawMaterial'] });
+      queryClient.invalidateQueries({ queryKey: PERIOD_QUERY_KEY });
     },
   });
 };
@@ -90,15 +100,16 @@ export const useImportStockRawMaterial = () => {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ data, mode }: { data: Omit<StockRawMaterialData, 'id' | 'createdAt' | 'updatedAt'>[], mode: 'add' | 'overwrite' }) => {
+    mutationFn: async ({ data, mode, periodId }: { data: Omit<StockRawMaterialData, 'id' | 'periodId' | 'createdAt' | 'updatedAt'>[], mode: 'add' | 'overwrite'; periodId: string }) => {
       const response = await fetchApi<{ message: string; count: number }>('/stock-raw-material/import', {
         method: 'POST',
-        body: JSON.stringify({ data, mode }),
+        body: JSON.stringify({ data, mode, periodId }),
       });
       return response;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['stockRawMaterial'] });
+      queryClient.invalidateQueries({ queryKey: PERIOD_QUERY_KEY });
     },
   });
 };

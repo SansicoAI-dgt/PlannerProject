@@ -1,17 +1,21 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
-import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { config } from '../config';
 import { authenticate, requireRole } from '../middleware/auth';
+import { computePeriodSignature, compareSignature } from '../lib/periodScope';
 import { runMaterialCalculation, type MaterialCalcSource } from '../lib/materialCalcEngine';
 
 /**
  * Route Material Planning berbasis PERIODE (PlanningCycle).
  *
- * Prinsip isolasi (rancangan §3.1):
- *  - Semua tabel data punya cycleId NOT NULL, dan semua unique diawali cycleId.
- *  - SETIAP query wajib memfilter cycleId. Tidak ada deleteMany tanpa filter.
+ * Prinsip isolasi:
+ *  - Tabel MASTER DATA (weekly_schedules, wips, hotlists, stock_raw_materials,
+ *    outstanding_pos) punya `periodId` NOT NULL dan semua unique diawali periodId.
+ *  - SETIAP query wajib memfilter periodId. Tidak ada deleteMany tanpa filter.
  *  - NPOF adalah pengecualian: sumber global yang dipakai bersama semua periode.
+ *
+ * Sejak 2026-09-28 tabel snapshot Cycle* DIHAPUS — data periode dibaca langsung
+ * dari tabel Master Data (lihat migrasi 20260928000000_master_data_period).
  */
 
 const SOURCE_TYPES = ['MRP', 'HOTLIST', 'STOCK_RM', 'OUTSTANDING_PO', 'WIP'] as const;
@@ -47,15 +51,20 @@ function uploadMonthOf(date: Date): string {
   return date.toISOString().slice(0, 7);
 }
 
-function toDate(value: unknown): Date | null {
-  if (!value) return null;
-  const d = new Date(String(value));
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function toNumber(value: unknown): number {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+/**
+ * Jumlah baris per sumber untuk SATU periode. Dipakai kartu kelengkapan data di
+ * Material Calculation. Selalu difilter `periodId` supaya periode lain tidak
+ * pernah ikut terhitung.
+ */
+async function countPeriodRows(periodId: string): Promise<Record<SourceType, number>> {
+  const [mrp, hotlist, stock, po, wip] = await Promise.all([
+    prisma.weeklySchedule.count({ where: { periodId } }),
+    prisma.hotlist.count({ where: { periodId } }),
+    prisma.stockRawMaterial.count({ where: { periodId } }),
+    prisma.outstandingPO.count({ where: { periodId } }),
+    prisma.wIP.count({ where: { periodId } }),
+  ]);
+  return { MRP: mrp, HOTLIST: hotlist, STOCK_RM: stock, OUTSTANDING_PO: po, WIP: wip };
 }
 
 function addMonths(date: Date, months: number): Date {
@@ -119,172 +128,10 @@ async function writeAudit(params: {
   });
 }
 
-/**
- * Salin data dari tabel Master Data (live) ke dalam SATU periode.
- *
- * Dipakai supaya user tidak perlu upload ulang file Excel yang sama: data yang
- * sudah ada di Master Data langsung dijadikan isi periode. Data live sudah
- * terstruktur, jadi tidak perlu divalidasi lagi seperti jalur `import`.
- */
-async function copyLiveIntoCycle(cycleId: string, source: SourceType, userId: string) {
-  let inserted = 0;
-  let replaced = 0;
-  let mrpStart: Date | null = null;
-  let mrpEnd: Date | null = null;
-
-  switch (source) {
-    case 'MRP': {
-      const rows = await prisma.weeklySchedule.findMany({ include: { item: true } });
-      const payload: Prisma.CycleMRPWeekCreateManyInput[] = rows.map((r) => ({
-        cycleId,
-        partNumber: r.item.partNumber,
-        description: r.item.itemName,
-        year: r.year,
-        weekNumber: r.weekNumber,
-        weekStartDate: r.weekStartDate,
-        weekEndDate: r.weekEndDate,
-        quantity: r.quantity,
-      }));
-      for (const r of rows) {
-        if (!mrpStart || r.weekStartDate < mrpStart) mrpStart = r.weekStartDate;
-        if (!mrpEnd || r.weekEndDate > mrpEnd) mrpEnd = r.weekEndDate;
-      }
-      replaced = await prisma.cycleMRPWeek.count({ where: { cycleId } });
-      await prisma.$transaction(
-        async (tx) => {
-          await tx.cycleMRPWeek.deleteMany({ where: { cycleId } });
-          for (let i = 0; i < payload.length; i += 1000) {
-            await tx.cycleMRPWeek.createMany({ data: payload.slice(i, i + 1000) });
-          }
-        },
-        { timeout: 180000, maxWait: 30000 },
-      );
-      inserted = payload.length;
-      break;
-    }
-    case 'HOTLIST': {
-      const rows = await prisma.hotlist.findMany();
-      const payload: Prisma.CycleHotlistCreateManyInput[] = rows.map((h) => ({
-        cycleId,
-        partNumber: h.partNumber,
-        biTotal: h.biTotal,
-      }));
-      replaced = await prisma.cycleHotlist.count({ where: { cycleId } });
-      await prisma.$transaction(
-        async (tx) => {
-          await tx.cycleHotlist.deleteMany({ where: { cycleId } });
-          for (let i = 0; i < payload.length; i += 1000) {
-            await tx.cycleHotlist.createMany({ data: payload.slice(i, i + 1000) });
-          }
-        },
-        { timeout: 180000, maxWait: 30000 },
-      );
-      inserted = payload.length;
-      break;
-    }
-    case 'STOCK_RM': {
-      const rows = await prisma.stockRawMaterial.findMany();
-      const payload: Prisma.CycleStockRMCreateManyInput[] = rows.map((s) => ({
-        cycleId,
-        itemDesc: s.itemDesc,
-        supplier: s.supplier,
-        qty: s.qty,
-        unit: s.unit,
-        date: s.date,
-      }));
-      replaced = await prisma.cycleStockRM.count({ where: { cycleId } });
-      await prisma.$transaction(
-        async (tx) => {
-          await tx.cycleStockRM.deleteMany({ where: { cycleId } });
-          for (let i = 0; i < payload.length; i += 1000) {
-            await tx.cycleStockRM.createMany({ data: payload.slice(i, i + 1000) });
-          }
-        },
-        { timeout: 180000, maxWait: 30000 },
-      );
-      inserted = payload.length;
-      break;
-    }
-    case 'OUTSTANDING_PO': {
-      const rows = await prisma.outstandingPO.findMany();
-      const payload: Prisma.CycleOutstandingPOCreateManyInput[] = rows.map((p) => ({
-        cycleId,
-        itemDesc: p.itemDesc,
-        supplierName: p.supplierName,
-        qtyOrder: p.qtyOrder,
-        qtyOrderUnit: p.qtyOrderUnit,
-        qtyDelivered: p.qtyDelivered,
-        qtyDeliveredUnit: p.qtyDeliveredUnit,
-        planReceivedDate: p.planReceivedDate,
-      }));
-      replaced = await prisma.cycleOutstandingPO.count({ where: { cycleId } });
-      await prisma.$transaction(
-        async (tx) => {
-          await tx.cycleOutstandingPO.deleteMany({ where: { cycleId } });
-          for (let i = 0; i < payload.length; i += 1000) {
-            await tx.cycleOutstandingPO.createMany({ data: payload.slice(i, i + 1000) });
-          }
-        },
-        { timeout: 180000, maxWait: 30000 },
-      );
-      inserted = payload.length;
-      break;
-    }
-    default: {
-      const rows = await prisma.wIP.findMany({ include: { item: true } });
-      const payload: Prisma.CycleWIPCreateManyInput[] = rows.map((w) => ({
-        cycleId,
-        partNumber: w.item.partNumber,
-        location: w.location,
-        quantity: w.quantity,
-      }));
-      replaced = await prisma.cycleWIP.count({ where: { cycleId } });
-      await prisma.$transaction(
-        async (tx) => {
-          await tx.cycleWIP.deleteMany({ where: { cycleId } });
-          for (let i = 0; i < payload.length; i += 1000) {
-            await tx.cycleWIP.createMany({ data: payload.slice(i, i + 1000) });
-          }
-        },
-        { timeout: 180000, maxWait: 30000 },
-      );
-      inserted = payload.length;
-      break;
-    }
-  }
-
-  const now = new Date();
-  await prisma.planningCycle.update({
-    where: { id: cycleId },
-    data: {
-      lastUploadedAt: now,
-      lastDataChangeAt: now,
-      ...(source === 'MRP' && mrpStart && mrpEnd ? { mrpStartDate: mrpStart, mrpEndDate: mrpEnd } : {}),
-    },
-  });
-
-  await prisma.cycleSourceUpload.create({
-    data: {
-      cycleId,
-      sourceType: source,
-      fileName: '(salin dari Master Data)',
-      rowCount: inserted,
-      mode: 'replace',
-      uploadedBy: userId,
-    },
-  });
-
-  await writeAudit({
-    cycleId,
-    userId,
-    action: replaced > 0 ? 'UPDATE' : 'CREATE',
-    sourceType: source,
-    entityType: 'CycleSourceUpload',
-    notes: `Salin ${source} dari Master Data: ${inserted} baris masuk, ${replaced} baris lama diganti.`,
-  });
-
-  return { source, inserted, replaced };
-}
+// CATATAN (2026-09-28): fungsi `copyLiveIntoCycle` dan endpoint `import` /
+// `import-live` SUDAH DIHAPUS. Sejak periode pindah ke Master Data (`periodId`),
+// data periode BUKAN lagi salinan: halaman Master Data menulis LANGSUNG ke tabel
+// periode. Perhitungan cukup membaca tabel Master Data dengan filter `periodId`.
 
 export default async function materialPlanningRoutes(server: FastifyInstance) {
   const editor = [authenticate, requireRole(['ADMIN'])];
@@ -293,6 +140,27 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
   // ══════════════════════════════════════════════════════════════════════
   // DAFTAR & PEMBUATAN PERIODE
   // ══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Daftar periode RINGKAS untuk halaman Master Data: hanya identitas periode +
+   * jumlah baris tiap sumber. Dipakai untuk folder periode dan validasi
+   * "periode ini sudah ada datanya atau belum" sebelum upload.
+   */
+  server.get('/api/v1/material-planning/periods', { preValidation: [authenticate] }, async (_request, reply) => {
+    const cycles = await prisma.planningCycle.findMany({ orderBy: { uploadMonth: 'desc' } });
+    const data = await Promise.all(
+      cycles.map(async (c) => ({
+        id: c.id,
+        uploadMonth: c.uploadMonth,
+        label: c.label,
+        isLocked: c.isLocked,
+        mrpStartDate: c.mrpStartDate,
+        mrpEndDate: c.mrpEndDate,
+        counts: await countPeriodRows(c.id),
+      })),
+    );
+    return reply.send({ data });
+  });
 
   server.get('/api/v1/material-planning/cycles', { preValidation: [authenticate] }, async (_request, reply) => {
     const [cycles, npofAgg] = await Promise.all([
@@ -393,8 +261,9 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
         data: {
           uploadMonth,
           label: body.label?.trim() || labelFromUploadMonth(uploadMonth),
-          mrpStartDate: now,
-          mrpEndDate: now,
+          // Belum diketahui sampai data MRP diupload ke periode ini.
+          mrpStartDate: null,
+          mrpEndDate: null,
           weekCount: 26,
           retentionDueAt: addMonths(now, RETENTION_MONTHS),
           notes: body.notes,
@@ -453,26 +322,14 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
     if (!cycle) return reply.code(404).send({ error: 'Not Found', message: 'Periode tidak ditemukan' });
 
     const current = cycle.results.find((r) => r.isCurrent) ?? null;
-    const counts = await Promise.all([
-      prisma.cycleMRPWeek.count({ where: { cycleId: id } }),
-      prisma.cycleHotlist.count({ where: { cycleId: id } }),
-      prisma.cycleStockRM.count({ where: { cycleId: id } }),
-      prisma.cycleOutstandingPO.count({ where: { cycleId: id } }),
-      prisma.cycleWIP.count({ where: { cycleId: id } }),
-    ]);
+    const rowCounts = await countPeriodRows(id);
 
     return reply.send({
       data: {
         ...cycle,
         results: cycle.results.map((r) => ({ ...r, resultSnapshot: undefined, summarySnapshot: undefined })),
         derivedStatus: deriveStatus(cycle, current).base,
-        rowCounts: {
-          MRP: counts[0],
-          HOTLIST: counts[1],
-          STOCK_RM: counts[2],
-          OUTSTANDING_PO: counts[3],
-          WIP: counts[4],
-        },
+        rowCounts,
       },
     });
   });
@@ -507,293 +364,16 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
     const cycle = await requireCycle(id);
     if (!cycle) return reply.code(404).send({ error: 'Not Found', message: 'Periode tidak ditemukan' });
 
-    // onDelete: Cascade menghapus 8 tabel turunannya sekaligus.
+    // onDelete: Cascade pada `periodId` menghapus data periode ini di 5 tabel
+    // Master Data sekaligus (weekly_schedules, wips, hotlists,
+    // stock_raw_materials, outstanding_pos).
     await prisma.planningCycle.delete({ where: { id } });
     return reply.send({ success: true, message: `Periode "${cycle.label}" dihapus beserta seluruh datanya.` });
   });
 
-  // ══════════════════════════════════════════════════════════════════════
-  // IMPORT DATA SUMBER
-  // ══════════════════════════════════════════════════════════════════════
 
-  server.post('/api/v1/material-planning/cycles/:id/import', { preValidation: editor }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const body = (request.body || {}) as {
-      source?: string;
-      data?: unknown[];
-      fileName?: string;
-      mode?: string;
-    };
 
-    const cycle = await requireCycle(id);
-    if (!cycle) return reply.code(404).send({ error: 'Not Found', message: 'Periode tidak ditemukan' });
-    if (cycle.isLocked) {
-      return reply.code(409).send({ error: 'Conflict', message: 'Periode terkunci. Buka kunci dulu.' });
-    }
 
-    const source = String(body.source || '').toUpperCase() as SourceType;
-    if (!SOURCE_TYPES.includes(source)) {
-      return reply.code(400).send({
-        error: 'Bad Request',
-        message: `Sumber tidak dikenal. Pilihan: ${SOURCE_TYPES.join(', ')}. NPOF dikelola di Master Data dan dipakai bersama semua periode.`,
-      });
-    }
-
-    const rows = Array.isArray(body.data) ? body.data : [];
-    if (rows.length === 0) {
-      return reply.code(400).send({ error: 'Bad Request', message: 'Data kosong.' });
-    }
-
-    const asRecord = (row: unknown) => (row || {}) as Record<string, unknown>;
-    let skipped = 0;
-    let mrpStart: Date | null = null;
-    let mrpEnd: Date | null = null;
-
-    // ── Tahap 1: validasi & susun data (TANPA database) ──────────────────
-    // Dipisah dari tahap tulis supaya tidak ada satu query per baris.
-    // Cara lama (satu create() per baris di dalam transaksi) gagal dengan
-    // P2028 "Transaction not found" begitu barisnya ribuan — dan data MRP
-    // nyata berisi ~16.000 baris.
-    const mrpData: Prisma.CycleMRPWeekCreateManyInput[] = [];
-    const hotlistData: Prisma.CycleHotlistCreateManyInput[] = [];
-    const stockData: Prisma.CycleStockRMCreateManyInput[] = [];
-    const poData: Prisma.CycleOutstandingPOCreateManyInput[] = [];
-    const wipData: Prisma.CycleWIPCreateManyInput[] = [];
-
-    switch (source) {
-      case 'MRP': {
-        for (const raw of rows) {
-          const row = asRecord(raw);
-          const partNumber = String(row.partNumber ?? '').trim();
-          const weekStartDate = toDate(row.weekStartDate);
-          const weekEndDate = toDate(row.weekEndDate) ?? weekStartDate;
-          const weekNumber = Math.trunc(toNumber(row.weekNumber));
-          if (!partNumber || !weekStartDate || !weekEndDate || !weekNumber) {
-            skipped += 1;
-            continue;
-          }
-          const year = Math.trunc(toNumber(row.year)) || weekStartDate.getUTCFullYear();
-          mrpData.push({
-            cycleId: id,
-            partNumber,
-            description: row.description ? String(row.description) : null,
-            year,
-            weekNumber,
-            weekStartDate,
-            weekEndDate,
-            quantity: toNumber(row.quantity),
-          });
-          if (!mrpStart || weekStartDate < mrpStart) mrpStart = weekStartDate;
-          if (!mrpEnd || weekEndDate > mrpEnd) mrpEnd = weekEndDate;
-        }
-        break;
-      }
-      case 'HOTLIST': {
-        for (const raw of rows) {
-          const row = asRecord(raw);
-          const partNumber = String(row.partNumber ?? '').trim();
-          if (!partNumber) {
-            skipped += 1;
-            continue;
-          }
-          hotlistData.push({ cycleId: id, partNumber, biTotal: toNumber(row.biTotal) });
-        }
-        break;
-      }
-      case 'STOCK_RM': {
-        for (const raw of rows) {
-          const row = asRecord(raw);
-          const itemDesc = String(row.itemDesc ?? '').trim();
-          if (!itemDesc) {
-            skipped += 1;
-            continue;
-          }
-          stockData.push({
-            cycleId: id,
-            itemDesc,
-            supplier: row.supplier ? String(row.supplier) : null,
-            qty: toNumber(row.qty),
-            unit: String(row.unit ?? '').trim(),
-            date: toDate(row.date) ?? new Date(),
-          });
-        }
-        break;
-      }
-      case 'OUTSTANDING_PO': {
-        for (const raw of rows) {
-          const row = asRecord(raw);
-          const itemDesc = String(row.itemDesc ?? '').trim();
-          const supplierName = String(row.supplierName ?? '').trim();
-          const planReceivedDate = toDate(row.planReceivedDate);
-          if (!itemDesc || !supplierName || !planReceivedDate) {
-            skipped += 1;
-            continue;
-          }
-          poData.push({
-            cycleId: id,
-            itemDesc,
-            supplierName,
-            qtyOrder: toNumber(row.qtyOrder),
-            qtyOrderUnit: String(row.qtyOrderUnit ?? '').trim(),
-            qtyDelivered: toNumber(row.qtyDelivered),
-            qtyDeliveredUnit: String(row.qtyDeliveredUnit ?? '').trim(),
-            planReceivedDate,
-          });
-        }
-        break;
-      }
-      default: {
-        for (const raw of rows) {
-          const row = asRecord(raw);
-          const partNumber = String(row.partNumber ?? '').trim();
-          const location = String(row.location ?? '').trim();
-          if (!partNumber || !location) {
-            skipped += 1;
-            continue;
-          }
-          wipData.push({ cycleId: id, partNumber, location, quantity: toNumber(row.quantity) });
-        }
-        break;
-      }
-    }
-
-    const inserted =
-      mrpData.length + hotlistData.length + stockData.length + poData.length + wipData.length;
-
-    // ── Tahap 2: timpa data sumber ini DI DALAM periode ini ──────────────
-    // createMany per kelompok 1.000 baris: jauh lebih cepat daripada satu
-    // query per baris, dan tidak menabrak batas waktu transaksi.
-    const CHUNK = 1000;
-    const previousCount = await prisma.$transaction(
-      async (tx) => {
-        switch (source) {
-          case 'MRP': {
-            const before = await tx.cycleMRPWeek.count({ where: { cycleId: id } });
-            await tx.cycleMRPWeek.deleteMany({ where: { cycleId: id } });
-            for (let i = 0; i < mrpData.length; i += CHUNK) {
-              await tx.cycleMRPWeek.createMany({ data: mrpData.slice(i, i + CHUNK) });
-            }
-            return before;
-          }
-          case 'HOTLIST': {
-            const before = await tx.cycleHotlist.count({ where: { cycleId: id } });
-            await tx.cycleHotlist.deleteMany({ where: { cycleId: id } });
-            for (let i = 0; i < hotlistData.length; i += CHUNK) {
-              await tx.cycleHotlist.createMany({ data: hotlistData.slice(i, i + CHUNK) });
-            }
-            return before;
-          }
-          case 'STOCK_RM': {
-            const before = await tx.cycleStockRM.count({ where: { cycleId: id } });
-            await tx.cycleStockRM.deleteMany({ where: { cycleId: id } });
-            for (let i = 0; i < stockData.length; i += CHUNK) {
-              await tx.cycleStockRM.createMany({ data: stockData.slice(i, i + CHUNK) });
-            }
-            return before;
-          }
-          case 'OUTSTANDING_PO': {
-            const before = await tx.cycleOutstandingPO.count({ where: { cycleId: id } });
-            await tx.cycleOutstandingPO.deleteMany({ where: { cycleId: id } });
-            for (let i = 0; i < poData.length; i += CHUNK) {
-              await tx.cycleOutstandingPO.createMany({ data: poData.slice(i, i + CHUNK) });
-            }
-            return before;
-          }
-          default: {
-            const before = await tx.cycleWIP.count({ where: { cycleId: id } });
-            await tx.cycleWIP.deleteMany({ where: { cycleId: id } });
-            for (let i = 0; i < wipData.length; i += CHUNK) {
-              await tx.cycleWIP.createMany({ data: wipData.slice(i, i + CHUNK) });
-            }
-            return before;
-          }
-        }
-      },
-      { timeout: 180000, maxWait: 30000 },
-    );
-
-    const now = new Date();
-    await prisma.planningCycle.update({
-      where: { id },
-      data: {
-        lastUploadedAt: now,
-        lastDataChangeAt: now,
-        ...(source === 'MRP' && mrpStart && mrpEnd ? { mrpStartDate: mrpStart, mrpEndDate: mrpEnd } : {}),
-      },
-    });
-
-    await prisma.cycleSourceUpload.create({
-      data: {
-        cycleId: id,
-        sourceType: source,
-        fileName: body.fileName ?? null,
-        rowCount: inserted,
-        mode: body.mode ?? 'replace',
-        uploadedBy: request.user!.id,
-      },
-    });
-
-    // SATU entri audit per aksi upload, bukan per baris data.
-    await writeAudit({
-      cycleId: id,
-      userId: request.user!.id,
-      action: previousCount > 0 ? 'UPDATE' : 'CREATE',
-      sourceType: source,
-      entityType: 'CycleSourceUpload',
-      notes: `Upload ${source}: ${inserted} baris masuk, ${skipped} dilewati, ${previousCount} baris lama diganti. Hanya periode ini yang terpengaruh.`,
-    });
-
-    return reply.send({
-      data: {
-        source,
-        inserted,
-        skipped,
-        replaced: previousCount,
-        message: `Data ${source} periode "${cycle.label}" diganti. Hasil perhitungan periode ini perlu dihitung ulang. Periode lain tidak terpengaruh.`,
-      },
-    });
-  });
-
-  /**
-   * Salin data dari Master Data ke periode ini.
-   * body: { sources?: [...] } atau { source: 'MRP' }; 'ALL' = kelima sumber.
-   */
-  server.post('/api/v1/material-planning/cycles/:id/import-live', { preValidation: editor }, async (request, reply) => {
-    const { id } = request.params as { id: string };
-    const body = (request.body || {}) as { source?: string; sources?: string[] };
-
-    const cycle = await requireCycle(id);
-    if (!cycle) return reply.code(404).send({ error: 'Not Found', message: 'Periode tidak ditemukan' });
-    if (cycle.isLocked) {
-      return reply.code(409).send({ error: 'Conflict', message: 'Periode terkunci. Buka kunci dulu.' });
-    }
-
-    const requested = (body.sources?.length ? body.sources : [body.source ?? 'ALL']).map((s) =>
-      String(s).toUpperCase(),
-    );
-    const targets: SourceType[] = requested.includes('ALL')
-      ? [...SOURCE_TYPES]
-      : (requested.filter((s) => (SOURCE_TYPES as readonly string[]).includes(s)) as SourceType[]);
-
-    if (targets.length === 0) {
-      return reply.code(400).send({
-        error: 'Bad Request',
-        message: `Sumber tidak dikenal. Pilihan: ALL, ${SOURCE_TYPES.join(', ')}.`,
-      });
-    }
-
-    const results = [];
-    for (const source of targets) {
-      results.push(await copyLiveIntoCycle(id, source, request.user!.id));
-    }
-
-    return reply.send({
-      data: results,
-      message:
-        'Data Master Data disalin ke periode ini. Hasil perhitungan periode ini perlu dihitung ulang. ' +
-        'Periode lain tidak terpengaruh.',
-    });
-  });
 
   server.get('/api/v1/material-planning/cycles/:id/sources', { preValidation: [authenticate] }, async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -805,20 +385,7 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
       orderBy: { uploadedAt: 'desc' },
     });
 
-    const counts = await Promise.all([
-      prisma.cycleMRPWeek.count({ where: { cycleId: id } }),
-      prisma.cycleHotlist.count({ where: { cycleId: id } }),
-      prisma.cycleStockRM.count({ where: { cycleId: id } }),
-      prisma.cycleOutstandingPO.count({ where: { cycleId: id } }),
-      prisma.cycleWIP.count({ where: { cycleId: id } }),
-    ]);
-    const rowCounts: Record<SourceType, number> = {
-      MRP: counts[0],
-      HOTLIST: counts[1],
-      STOCK_RM: counts[2],
-      OUTSTANDING_PO: counts[3],
-      WIP: counts[4],
-    };
+    const rowCounts = await countPeriodRows(id);
 
     return reply.send({
       data: SOURCE_TYPES.map((sourceType) => {
@@ -833,6 +400,52 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
         };
       }),
       npof: { isShared: true, note: 'NPOF dipakai bersama semua periode, dikelola di Master Data.' },
+    });
+  });
+
+  /**
+   * Validitas hasil perhitungan periode ini terhadap data master SEKARANG.
+   * Dipakai halaman Material Calculation untuk menampilkan
+   * "Calculation tidak valid karena ada perubahan data. Silakan hitung ulang."
+   * beserta sumber mana yang berubah.
+   */
+  server.get('/api/v1/material-planning/cycles/:id/data-status', { preValidation: [authenticate] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const cycle = await requireCycle(id);
+    if (!cycle) return reply.code(404).send({ error: 'Not Found', message: 'Periode tidak ditemukan' });
+
+    const current = await prisma.cycleResult.findFirst({
+      where: { cycleId: id, isCurrent: true },
+      select: {
+        id: true,
+        runNumber: true,
+        calculatedAt: true,
+        dataVersionAt: true,
+        dataSignature: true,
+      },
+    });
+
+    const currentSignature = await computePeriodSignature(id);
+    const diff = compareSignature(current?.dataSignature ?? null, currentSignature);
+
+    // Cadangan untuk perhitungan lama yang belum punya checksum: bandingkan cap waktu.
+    const staleByTimestamp =
+      Boolean(current) && cycle.lastDataChangeAt.getTime() > current!.dataVersionAt.getTime();
+    const invalid = Boolean(current) && (diff.anyChanged || staleByTimestamp);
+
+    return reply.send({
+      data: {
+        hasResult: Boolean(current),
+        runNumber: current?.runNumber ?? null,
+        calculatedAt: current?.calculatedAt ?? null,
+        signatureComparable: diff.comparable,
+        changedSources: diff.changedSources,
+        isValid: Boolean(current) && !invalid,
+        isInvalid: invalid,
+        invalidReason: invalid ? 'Calculation tidak valid karena ada perubahan data. Silakan hitung ulang.' : null,
+        currentSignature,
+        calculatedSignature: current?.dataSignature ?? null,
+      },
     });
   });
 
@@ -873,26 +486,28 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
       return reply.code(409).send({ error: 'Conflict', message: 'Periode terkunci. Buka kunci dulu.' });
     }
 
+    // Sejak 2026-09-28 data periode dibaca LANGSUNG dari tabel Master Data
+    // (difilter periodId) — tidak ada lagi tabel snapshot Cycle*.
     const [mrpRows, hotlists, stocks, pos, wips, npofs] = await Promise.all([
-      prisma.cycleMRPWeek.findMany({ where: { cycleId: id } }),
-      prisma.cycleHotlist.findMany({ where: { cycleId: id } }),
-      prisma.cycleStockRM.findMany({ where: { cycleId: id } }),
-      prisma.cycleOutstandingPO.findMany({ where: { cycleId: id } }),
-      prisma.cycleWIP.findMany({ where: { cycleId: id } }),
+      prisma.weeklySchedule.findMany({ where: { periodId: id }, include: { item: true } }),
+      prisma.hotlist.findMany({ where: { periodId: id } }),
+      prisma.stockRawMaterial.findMany({ where: { periodId: id }, orderBy: { date: 'desc' } }),
+      prisma.outstandingPO.findMany({ where: { periodId: id } }),
+      prisma.wIP.findMany({ where: { periodId: id }, include: { item: true } }),
       prisma.npofMaterial.findMany(), // global, dipakai bersama semua periode
     ]);
 
     if (mrpRows.length === 0) {
       return reply.code(400).send({
         error: 'Bad Request',
-        message: 'Periode ini belum punya data MRP. Upload data MRP dulu.',
+        message: 'Periode ini belum punya data MRP. Upload data MRP dulu di halaman Master Data.',
       });
     }
 
     const source: MaterialCalcSource = {
       mrpWeeks: mrpRows.map((r) => ({
-        partNumber: r.partNumber,
-        description: r.description,
+        partNumber: r.item.partNumber,
+        description: r.item.itemName,
         year: r.year,
         weekNumber: r.weekNumber,
         weekStartDate: r.weekStartDate,
@@ -909,14 +524,29 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
         qtyDelivered: p.qtyDelivered,
         planReceivedDate: p.planReceivedDate,
       })),
-      wips: wips.map((w) => ({ partNumber: w.partNumber, location: w.location, quantity: w.quantity })),
+      wips: wips.map((w) => ({ partNumber: w.item.partNumber, location: w.location, quantity: w.quantity })),
       npofs,
     };
 
+    // mrpStartDate boleh belum terisi kalau periode dibuat dari upload non-MRP;
+    // ambil dari kalender MRP periode ini sebagai cadangan.
+    const periodStartDate =
+      cycle.mrpStartDate ??
+      mrpRows.reduce<Date | null>(
+        (min, r) => (!min || r.weekStartDate < min ? r.weekStartDate : min),
+        null,
+      );
+    if (!periodStartDate) {
+      return reply.code(400).send({
+        error: 'Bad Request',
+        message: 'Tanggal mulai MRP periode ini tidak diketahui. Upload ulang data MRP.',
+      });
+    }
+
     const result = runMaterialCalculation(source, {
       weekCount: cycle.weekCount,
-      periodStartDate: cycle.mrpStartDate,
-      timelineBaseDate: cycle.mrpStartDate,
+      periodStartDate,
+      timelineBaseDate: periodStartDate,
       toleranceCm: config.materialCalc.sizeToleranceCm,
       sheetsPerRim: config.materialCalc.sheetsPerRim,
       requireSupplierMatch: config.materialCalc.requireSupplierMatch,
@@ -924,6 +554,10 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
 
     const calculatedAt = new Date();
     const runNumber = cycle.calculatedRunCount + 1;
+
+    // Checksum data master tepat sebelum hasil disimpan — dasar validasi
+    // "Calculation tidak valid karena ada perubahan data".
+    const signature = await computePeriodSignature(id);
 
     const created = await prisma.$transaction(async (tx) => {
       // Siklus hidup hasil (rancangan §4.1.5):
@@ -962,6 +596,7 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
             groups: result.groups,
           } as any,
           summarySnapshot: { totals: result.totals, weeks: result.weeks } as any,
+          dataSignature: signature as any,
         },
       });
 

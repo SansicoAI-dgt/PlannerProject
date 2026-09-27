@@ -127,92 +127,18 @@ export default async function materialCalcRoutes(server: FastifyInstance) {
     return reply.send({ success: true });
   });
 
-  // ── Perhitungan live ────────────────────────────────────────────────────
+  // ── Perhitungan live DIHENTIKAN (2026-09-28) ────────────────────────────
+  // Dulu endpoint ini menghitung dari tabel Master Data TANPA filter periode,
+  // sehingga data beberapa bulan tercampur. Sekarang setiap perhitungan HARUS
+  // lewat satu periode (PlanningCycle):
+  //   POST /api/v1/material-planning/cycles/:id/calculate
+  //   GET  /api/v1/material-planning/cycles/:id/results/:resultId
   server.get('/api/v1/material-calculation', { preValidation: [authenticate] }, async (_request, reply) => {
-    try {
-      const npofMaterials = await prisma.npofMaterial.findMany();
-
-      // MRP penuh. `weekNumber` di database sudah 1..26, jadi langsung dipakai
-      // sebagai urutan minggu.
-      const weeklySchedules = await prisma.weeklySchedule.findMany({ include: { item: true } });
-
-      const hotlists = await prisma.hotlist.findMany();
-      const wips = await prisma.wIP.findMany({ include: { item: true } });
-      const stocks = await prisma.stockRawMaterial.findMany({ orderBy: { date: 'desc' } });
-      const pos = await prisma.outstandingPO.findMany();
-
-      // Rentang periode diturunkan dari MRP itu sendiri.
-      const mrpWeeks = weeklySchedules.map((ws) => ({
-        partNumber: ws.item.partNumber,
-        description: ws.item.itemName,
-        year: ws.year,
-        weekNumber: ws.weekNumber,
-        weekStartDate: ws.weekStartDate,
-        weekEndDate: ws.weekEndDate,
-        quantity: ws.quantity,
-      }));
-
-      const weekCount = Math.max(1, ...mrpWeeks.map((w) => w.weekNumber));
-      const periodStart =
-        mrpWeeks.length > 0
-          ? new Date(Math.min(...mrpWeeks.map((w) => w.weekStartDate.getTime())))
-          : new Date();
-
-      const source: MaterialCalcSource = {
-        mrpWeeks,
-        hotlists: hotlists.map((h) => ({ partNumber: h.partNumber, biTotal: h.biTotal })),
-        stocks: stocks.map((s) => ({
-          itemDesc: s.itemDesc,
-          supplier: s.supplier,
-          qty: s.qty,
-          unit: s.unit,
-        })),
-        pos: pos.map((p) => ({
-          itemDesc: p.itemDesc,
-          supplierName: p.supplierName,
-          qtyOrder: p.qtyOrder,
-          qtyOrderUnit: p.qtyOrderUnit,
-          qtyDelivered: p.qtyDelivered,
-          planReceivedDate: p.planReceivedDate,
-        })),
-        wips: wips.map((w) => ({
-          partNumber: w.item.partNumber,
-          location: w.location,
-          quantity: w.quantity,
-        })),
-        npofs: npofMaterials,
-      };
-
-      const result: MaterialCalcEngineResult = runMaterialCalculation(source, {
-        weekCount,
-        periodStartDate: periodStart,
-        toleranceCm: config.materialCalc.sizeToleranceCm,
-        sheetsPerRim: config.materialCalc.sheetsPerRim,
-        requireSupplierMatch: config.materialCalc.requireSupplierMatch,
-      });
-
-      return reply.send({
-        calculatedAt: new Date().toISOString(),
-        periodWeeks: result.periodWeeks,
-        periodStartDate: result.periodStartDate.toISOString(),
-        periodEndDate: result.periodEndDate.toISOString(),
-        weeks: result.weeks,
-        totals: result.totals,
-        sourceData: {
-          MRP: weeklySchedules,
-          NPOF: npofMaterials,
-          StockRawMaterial: stocks,
-          WIP: wips,
-          HOTLIST: hotlists,
-          OutstandingPO: pos,
-        },
-        groups: result.groups,
-      });
-    } catch (error) {
-      server.log.error(error);
-      return reply
-        .code(500)
-        .send({ error: 'Internal Server Error', message: 'Failed to calculate material requirements' });
-    }
+    return reply.code(410).send({
+      error: 'Gone',
+      message:
+        'Perhitungan tanpa periode sudah tidak dipakai. Pilih periode di halaman Material Calculation ' +
+        '(POST /material-planning/cycles/:id/calculate).',
+    });
   });
 }

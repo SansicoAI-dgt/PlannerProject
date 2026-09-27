@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useWIPs, useUpsertWIP, useBulkUpsertWIP, useBulkDeleteWIP } from '../hooks/useWIP';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
-import { Settings2, Plus, Save, Upload, Trash2, Search, Filter, Calendar, X, Folder, ArrowLeft } from 'lucide-react';
+import { Settings2, Plus, Save, Upload, Trash2, Search, Filter, Calendar, X, Folder, ArrowLeft, Lock, CalendarPlus, Loader2 } from 'lucide-react';
+import { usePeriods, useCreatePeriod, monthLabel } from '../hooks/usePeriods';
+import { PeriodSelect } from '../components/PeriodSelect';
 import * as XLSX from 'xlsx';
-import { format } from 'date-fns';
 import { useAuthStore } from '../stores/authStore';
 
 const WIP_SHEET_LOCATIONS = ['Blister', 'UV', 'Varnish OPP', 'Die Cut'];
@@ -21,7 +22,31 @@ export function WIP() {
   
   const [showForm, setShowForm] = useState(false);
   
-  const { data: wipData, isLoading: loadingWIP } = useWIPs();
+  // Periode upload = keranjang data. WAJIB dipilih sebelum upload/isi manual.
+  const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
+  // Periode tujuan untuk Import / Update Manual. Ikut periode yang sedang dibuka,
+  // tapi tetap bisa diganti langsung dari dalam modal.
+  const [targetPeriodId, setTargetPeriodId] = useState<string | null>(null);
+  useEffect(() => {
+    if (selectedPeriodId) setTargetPeriodId(selectedPeriodId);
+  }, [selectedPeriodId]);
+  const [newPeriodMonth, setNewPeriodMonth] = useState('');
+  const { data: periodsRes, isLoading: periodsLoading } = usePeriods();
+  const periods = periodsRes?.data ?? [];
+  const selectedPeriod = periods.find((p) => p.id === selectedPeriodId) ?? null;
+  const createPeriod = useCreatePeriod();
+  const { data: wipData, isLoading: loadingWIP } = useWIPs(selectedPeriodId);
+
+  const handleCreatePeriod = async () => {
+    if (!newPeriodMonth) return;
+    try {
+      const res = await createPeriod.mutateAsync({ uploadMonth: newPeriodMonth });
+      setNewPeriodMonth('');
+      setSelectedPeriodId(res.data.id);
+    } catch (error: any) {
+      alert(error.message || 'Gagal membuat periode.');
+    }
+  };
   const { data: itemsData } = useItems();
   const createItem = useCreateItem();
   const upsertWIP = useUpsertWIP();
@@ -48,27 +73,13 @@ export function WIP() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLocation, setSelectedLocation] = useState('');
   const [selectedDate, setSelectedDate] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   const wips = wipData?.data || [];
   const items = itemsData?.data || [];
 
-  const groupedMonths = React.useMemo(() => {
-    const groups: Record<string, any[]> = {};
-    wips.forEach((wip: any) => {
-      if (!wip.date) return;
-      const monthKey = wip.date.substring(0, 7); // yyyy-MM
-      if (!groups[monthKey]) groups[monthKey] = [];
-      groups[monthKey].push(wip);
-    });
-    return Object.entries(groups).sort((a, b) => b[0].localeCompare(a[0]));
-  }, [wips]);
-
-  const currentMonthWips = selectedMonth
-    ? selectedMonth === 'ALL'
-      ? wips
-      : wips.filter((w: any) => w.date?.startsWith(selectedMonth))
-    : wips;
+  // Data sudah difilter server-side per periode — tidak lagi dipecah per bulan
+  // berdasarkan tanggal di dalam data.
+  const currentMonthWips = wips;
 
   // Extract unique locations dynamically from current active WIP data
   const activeLocations = React.useMemo(() => {
@@ -194,10 +205,15 @@ export function WIP() {
 
   const handleBulkSubmit = async (saveMode: 'overwrite' | 'add') => {
     if (importData.length === 0) return;
+    if (!targetPeriodId) {
+      alert('Pilih periode dulu sebelum menyimpan data.');
+      return;
+    }
     try {
       await bulkUpsertWIP.mutateAsync({
         records: importData,
-        saveMode
+        saveMode,
+        periodId: targetPeriodId,
       });
       setShowImportModal(false);
       setImportData([]);
@@ -233,6 +249,10 @@ export function WIP() {
   const handleSubmit = async (e: React.FormEvent | React.MouseEvent, saveMode: 'overwrite' | 'add') => {
     e.preventDefault();
     if (!formData.itemId || !formData.location) return;
+    if (!targetPeriodId) {
+      alert('Pilih periode dulu sebelum menyimpan data WIP.');
+      return;
+    }
 
     try {
       await upsertWIP.mutateAsync({
@@ -240,7 +260,8 @@ export function WIP() {
         shift: Number(formData.shift),
         quantity: Number(formData.quantity),
         progressPercent: Number(formData.progressPercent),
-        saveMode
+        saveMode,
+        periodId: targetPeriodId,
       });
       setShowForm(false);
       setFormData(prev => ({ ...prev, itemId: '', quantity: 0, progressPercent: 0, notes: '' }));
@@ -286,6 +307,11 @@ export function WIP() {
           <p className="text-xs text-muted-foreground mb-4">Note: Providing an update for the same Item + Location will OVERWRITE its current WIP data.</p>
           
           <form className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-start">
+            <PeriodSelect
+              value={targetPeriodId}
+              onChange={setTargetPeriodId}
+              className="lg:col-span-4"
+            />
             <div className="space-y-2 lg:col-span-2">
               <label className="text-sm font-medium">Part Number</label>
               <SearchableSelect
@@ -338,10 +364,10 @@ export function WIP() {
 
             <div className="lg:col-span-4 flex justify-end gap-3 mt-2">
               <button type="button" onClick={() => setShowForm(false)} className="h-10 border px-6 rounded-md font-medium hover:bg-muted">Cancel</button>
-              <button type="button" onClick={(e) => handleSubmit(e, 'add')} disabled={upsertWIP.isPending} className="h-10 bg-green-600 hover:bg-green-700 text-white px-6 rounded-md font-medium flex items-center gap-2">
+              <button type="button" onClick={(e) => handleSubmit(e, 'add')} disabled={upsertWIP.isPending || !targetPeriodId} className="h-10 bg-green-600 hover:bg-green-700 text-white px-6 rounded-md font-medium flex items-center gap-2 disabled:opacity-50">
                 <Plus size={16} /> {upsertWIP.isPending ? 'Saving...' : 'Save'}
               </button>
-              <button type="button" onClick={(e) => handleSubmit(e, 'overwrite')} disabled={upsertWIP.isPending} className="h-10 bg-primary text-primary-foreground px-6 rounded-md font-medium flex items-center gap-2">
+              <button type="button" onClick={(e) => handleSubmit(e, 'overwrite')} disabled={upsertWIP.isPending || !targetPeriodId} className="h-10 bg-primary text-primary-foreground px-6 rounded-md font-medium flex items-center gap-2 disabled:opacity-50">
                 <Save size={16} /> {upsertWIP.isPending ? 'Saving...' : 'Save Overwrite'}
               </button>
             </div>
@@ -350,65 +376,71 @@ export function WIP() {
       )}
 
       {/* Folder View or Table View */}
-      {!selectedMonth ? (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in zoom-in-95 duration-200">
-          {groupedMonths.length === 0 && !loadingWIP && (
-            <div className="col-span-full py-12 text-center text-muted-foreground border rounded-lg bg-card">
+      {!selectedPeriodId ? (
+        <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
+          {periods.length === 0 && !periodsLoading && (
+            <div className="py-12 text-center text-muted-foreground border rounded-lg bg-card">
               <Settings2 className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
-              <p className="text-base font-semibold">Tidak ada data WIP</p>
-              <p className="text-sm mt-1">Upload excel atau update status WIP untuk menambahkan data.</p>
+              <p className="text-base font-semibold">Belum ada periode</p>
+              <p className="text-sm mt-1">
+                Buat periode dulu (mis. September 2026), lalu upload data WIP ke periode itu.
+              </p>
             </div>
           )}
-          {wips.length > 0 && (
-            <div
-              onClick={() => setSelectedMonth('ALL')}
-              className="cursor-pointer p-5 border-2 border-indigo-500/30 bg-gradient-to-br from-indigo-500/5 to-purple-500/10 hover:from-indigo-500/10 hover:to-purple-500/20 hover:border-indigo-500/60 rounded-lg transition-all flex items-center gap-4 group shadow-sm relative overflow-hidden"
-            >
-              <div className="p-3 bg-indigo-500/15 rounded-lg group-hover:bg-indigo-500/25 transition-colors">
-                <Folder className="w-8 h-8 text-indigo-600 dark:text-indigo-400 fill-indigo-500/20" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-foreground group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                    Semua Data
-                  </h3>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 uppercase tracking-wider">
-                    All
-                  </span>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {periods.map((p) => (
+              <div
+                key={p.id}
+                onClick={() => setSelectedPeriodId(p.id)}
+                className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
+              >
+                <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
+                  <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
                 </div>
-                <p className="text-xs text-muted-foreground mt-0.5">{wips.length} Items (Total)</p>
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-foreground flex items-center gap-1.5">
+                    <span className="truncate">{p.label}</span>
+                    {p.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {p.counts.WIP} Baris WIP · {p.counts.MRP} baris MRP
+                  </p>
+                </div>
               </div>
+            ))}
+
+            <div className="p-5 border-2 border-dashed rounded-lg bg-card flex flex-col gap-3 justify-center">
+              <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+                <CalendarPlus className="w-4 h-4" /> Buat Periode Baru
+              </div>
+              <input
+                type="month"
+                value={newPeriodMonth}
+                onChange={(e) => setNewPeriodMonth(e.target.value)}
+                className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <button
+                onClick={handleCreatePeriod}
+                disabled={!newPeriodMonth || createPeriod.isPending}
+                className="w-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 px-3 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2"
+              >
+                {createPeriod.isPending ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                Buat {newPeriodMonth ? monthLabel(newPeriodMonth) : 'Periode'}
+              </button>
             </div>
-          )}
-          {groupedMonths.map(([monthKey, monthRecords]) => (
-            <div
-              key={monthKey}
-              onClick={() => setSelectedMonth(monthKey)}
-              className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
-            >
-              <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
-                <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
-              </div>
-              <div>
-                <h3 className="font-semibold text-foreground">
-                  {format(new Date(monthKey + '-01'), 'MMMM yyyy')}
-                </h3>
-                <p className="text-xs text-muted-foreground mt-0.5">{monthRecords.length} Items</p>
-              </div>
-            </div>
-          ))}
+          </div>
         </div>
       ) : (
         <>
           <div className="flex items-center gap-3 mb-2 animate-in fade-in slide-in-from-bottom-2">
             <button 
-              onClick={() => setSelectedMonth(null)}
+              onClick={() => setSelectedPeriodId(null)}
               className="p-2 hover:bg-background rounded-md border text-muted-foreground hover:text-foreground transition-colors shrink-0 bg-card"
-              title="Kembali ke Folder"
+              title="Kembali ke daftar periode"
             >
               <ArrowLeft className="w-4 h-4" />
             </button>
-            <h3 className="font-semibold text-lg">{selectedMonth === 'ALL' ? 'Semua Data (WIP)' : format(new Date(selectedMonth + '-01'), 'MMMM yyyy')}</h3>
+            <h3 className="font-semibold text-lg">{selectedPeriod?.label ?? 'Periode'} (WIP)</h3>
           </div>
           {/* Filters Bar */}
           <div className="bg-card text-card-foreground border rounded-lg p-4 shadow-sm flex flex-col md:flex-row gap-4 items-center animate-in fade-in slide-in-from-bottom-2">
@@ -601,6 +633,8 @@ export function WIP() {
             </div>
             
             <div className="p-6 flex-1 overflow-auto space-y-4">
+              <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="max-w-md" />
+
               <div className="flex items-center gap-4">
                 <input 
                   type="file" 
@@ -679,15 +713,15 @@ export function WIP() {
                 Cancel
               </button>
               <button 
-                onClick={() => handleBulkSubmit('add')} 
-                disabled={bulkUpsertWIP.isPending || importData.length === 0} 
+                onClick={() => handleBulkSubmit('add')}
+                disabled={bulkUpsertWIP.isPending || importData.length === 0 || !targetPeriodId}
                 className="h-10 bg-green-600 hover:bg-green-700 text-white px-6 rounded-md font-medium flex items-center gap-2 disabled:opacity-50 text-sm"
               >
                 <Plus size={16} /> {bulkUpsertWIP.isPending ? 'Saving...' : 'Save (Add)'}
               </button>
               <button 
-                onClick={() => handleBulkSubmit('overwrite')} 
-                disabled={bulkUpsertWIP.isPending || importData.length === 0} 
+                onClick={() => handleBulkSubmit('overwrite')}
+                disabled={bulkUpsertWIP.isPending || importData.length === 0 || !targetPeriodId}
                 className="h-10 bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white px-6 rounded-md font-medium flex items-center gap-2 disabled:opacity-50 text-sm"
               >
                 <Save size={16} /> {bulkUpsertWIP.isPending ? 'Saving...' : 'Save Overwrite'}

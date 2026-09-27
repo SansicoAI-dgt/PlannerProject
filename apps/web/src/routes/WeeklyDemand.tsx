@@ -1,8 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import { useWeeklyScheduleSummary, useBulkUpsertWeeklySchedule, useUpdateWeeklySchedule, useDeleteWeeklySchedule, useBulkDeleteWeeklySchedule } from '../hooks/useWeeklySchedule';
+import { usePeriods, useCreatePeriod, monthLabel } from '../hooks/usePeriods';
+import { PeriodSelect } from '../components/PeriodSelect';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
-import { Upload, Search, Save, Plus, CalendarRange, Trash2, ChevronLeft, ChevronRight, Calendar, Edit2, Folder, ArrowLeft } from 'lucide-react';
+import { Upload, Search, Save, Plus, CalendarRange, Trash2, ChevronLeft, ChevronRight, Calendar, Edit2, Folder, ArrowLeft, Lock, CalendarPlus, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { useAuthStore } from '../stores/authStore';
 
@@ -124,7 +126,30 @@ export function WeeklyDemand() {
   const [importRows, setImportRows] = useState<ImportRow[]>([]);
   const [importYear, setImportYear] = useState(currentYear);
   const [importSearch, setImportSearch] = useState('');
-  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+  // Periode upload = keranjang data. WAJIB dipilih sebelum upload/isi manual.
+  const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
+  // Periode tujuan untuk modal Import / Isi Manual. Ikut periode yang sedang
+  // dibuka, tapi tetap bisa diganti langsung dari dalam modal.
+  const [targetPeriodId, setTargetPeriodId] = useState<string | null>(null);
+  React.useEffect(() => {
+    if (selectedPeriodId) setTargetPeriodId(selectedPeriodId);
+  }, [selectedPeriodId]);
+  const [newPeriodMonth, setNewPeriodMonth] = useState('');
+  const { data: periodsRes, isLoading: periodsLoading } = usePeriods();
+  const periods = periodsRes?.data ?? [];
+  const selectedPeriod = periods.find((p) => p.id === selectedPeriodId) ?? null;
+  const createPeriod = useCreatePeriod();
+
+  const handleCreatePeriod = async () => {
+    if (!newPeriodMonth) return;
+    try {
+      const res = await createPeriod.mutateAsync({ uploadMonth: newPeriodMonth });
+      setNewPeriodMonth('');
+      setSelectedPeriodId(res.data.id);
+    } catch (error: any) {
+      alert(error.message || 'Gagal membuat periode.');
+    }
+  };
 
   // Manual add form state — uses an actual start date so the entry lines up
   // with the dynamic W1-W26 view (relative to today).
@@ -135,7 +160,7 @@ export function WeeklyDemand() {
     quantity: 0,
   });
 
-  const { data: summaryData, isLoading } = useWeeklyScheduleSummary();
+  const { data: summaryData, isLoading } = useWeeklyScheduleSummary(selectedPeriodId);
   const { data: itemsData } = useItems();
   const createItem = useCreateItem();
   const bulkUpsert = useBulkUpsertWeeklySchedule();
@@ -269,35 +294,27 @@ export function WeeklyDemand() {
     if (showForm && availableWeeks.length > 0) {
       const firstWeek = availableWeeks[0];
       const endStr = new Date(new Date(firstWeek.startDate).getTime() + 6 * 86400000).toISOString().split('T')[0];
-      setFormData(prev => ({
-        ...prev,
-        startDate: firstWeek.startDate,
-        endDate: endStr,
-      }));
+      // Kembalikan `prev` apa adanya kalau nilainya sudah sama — tanpa ini,
+      // setFormData selalu membuat objek baru sehingga render berulang tanpa henti
+      // ("Maximum update depth exceeded") selama form dibuka.
+      setFormData(prev =>
+        prev.startDate === firstWeek.startDate && prev.endDate === endStr
+          ? prev
+          : {
+              ...prev,
+              startDate: firstWeek.startDate,
+              endDate: endStr,
+            },
+      );
     }
   }, [showForm, availableWeeks]);
 
-  const groupedMonths = useMemo(() => {
-    const groups: Record<string, number[]> = {};
-    allWeeks.forEach((w) => {
-      const startStr = weekStartByNumber[w];
-      if (!startStr) return;
-      const monthKey = startStr.substring(0, 7); // yyyy-MM
-      if (!groups[monthKey]) groups[monthKey] = [];
-      groups[monthKey].push(w);
-    });
-    return Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [allWeeks, weekStartByNumber]);
-
-  const visibleWeeks = useMemo(() => {
-    if (selectedMonth === 'ALL') {
-      return allWeeks;
-    }
-    if (selectedMonth) {
-      return groupedMonths.find(g => g[0] === selectedMonth)?.[1] || [];
-    }
-    return allWeeks.slice(weekPage * WEEKS_PER_PAGE, (weekPage + 1) * WEEKS_PER_PAGE);
-  }, [allWeeks, weekPage, selectedMonth, groupedMonths]);
+  // Semua minggu MILIK PERIODE yang sedang dibuka. Tidak lagi dipecah per bulan
+  // berdasarkan tanggal di dalam data (itulah pengelompokan lama yang salah).
+  const visibleWeeks = useMemo(
+    () => allWeeks.slice(weekPage * WEEKS_PER_PAGE, (weekPage + 1) * WEEKS_PER_PAGE),
+    [allWeeks, weekPage],
+  );
   const totalPages = useMemo(() => Math.ceil(allWeeks.length / WEEKS_PER_PAGE), [allWeeks]);
 
   const filteredData = useMemo(() => {
@@ -368,8 +385,12 @@ export function WeeklyDemand() {
         });
       }
     }
+    if (!targetPeriodId) {
+      alert('Pilih periode dulu sebelum menyimpan data.');
+      return;
+    }
     try {
-      const res: any = await bulkUpsert.mutateAsync({ records, saveMode });
+      const res: any = await bulkUpsert.mutateAsync({ records, saveMode, periodId: targetPeriodId });
       setShowImport(false);
       setImportRows([]);
       alert(`Berhasil import ${res?.count ?? records.length} data!`);
@@ -425,8 +446,12 @@ export function WeeklyDemand() {
         quantity: formData.quantity,
       });
     }
+    if (!targetPeriodId) {
+      alert('Pilih periode dulu sebelum menyimpan data.');
+      return;
+    }
     try {
-      await bulkUpsert.mutateAsync({ records, saveMode });
+      await bulkUpsert.mutateAsync({ records, saveMode, periodId: targetPeriodId });
       setShowForm(false);
       setFormData({ itemId: '', startDate: getNextSaturdayISO(), endDate: getNextSaturdayISO(), quantity: 0 });
     } catch (err: any) {
@@ -467,6 +492,7 @@ export function WeeklyDemand() {
         <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
           <h3 className="font-semibold mb-4 flex items-center gap-2"><Calendar size={18} /> Add Weekly Demand</h3>
           <p className="text-xs text-muted-foreground mb-4">Use "Save Add" to add to existing, or "Save Overwrite" to replace.</p>
+          <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="mb-5 max-w-md" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
             <div className="space-y-2">
               <label className="text-sm font-medium">Part Number</label>
@@ -524,10 +550,10 @@ export function WeeklyDemand() {
             </div>
             <div className="md:col-span-2 flex justify-end gap-3 mt-2">
               <button type="button" onClick={() => setShowForm(false)} className="h-10 border px-6 rounded-md font-medium hover:bg-muted text-sm transition-colors">Cancel</button>
-              <button type="button" onClick={() => handleManualSave('add')} disabled={bulkUpsert.isPending} className="h-10 bg-green-600 hover:bg-green-700 text-white px-6 rounded-md font-medium flex items-center gap-2 text-sm transition-colors">
+              <button type="button" onClick={() => handleManualSave('add')} disabled={bulkUpsert.isPending || !targetPeriodId} className="h-10 bg-green-600 hover:bg-green-700 text-white px-6 rounded-md font-medium flex items-center gap-2 text-sm transition-colors disabled:opacity-50">
                 <Plus size={16} /> {bulkUpsert.isPending ? 'Saving...' : 'Save Add'}
               </button>
-              <button type="button" onClick={() => handleManualSave('overwrite')} disabled={bulkUpsert.isPending} className="h-10 bg-primary text-primary-foreground hover:bg-primary/90 px-6 rounded-md font-medium flex items-center gap-2 text-sm transition-colors">
+              <button type="button" onClick={() => handleManualSave('overwrite')} disabled={bulkUpsert.isPending || !targetPeriodId} className="h-10 bg-primary text-primary-foreground hover:bg-primary/90 px-6 rounded-md font-medium flex items-center gap-2 text-sm transition-colors disabled:opacity-50">
                 <Save size={16} /> {bulkUpsert.isPending ? 'Saving...' : 'Save Overwrite'}
               </button>
             </div>
@@ -536,68 +562,72 @@ export function WeeklyDemand() {
       )}
 
       {/* Folder View or Table View */}
-      {!selectedMonth ? (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in zoom-in-95 duration-200">
-          {groupedMonths.length === 0 && !isLoading && (
-            <div className="col-span-full py-12 text-center text-muted-foreground border rounded-lg bg-card shadow-sm">
+      {!selectedPeriodId ? (
+        <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
+          {periods.length === 0 && !periodsLoading && (
+            <div className="py-12 text-center text-muted-foreground border rounded-lg bg-card shadow-sm">
               <CalendarRange className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
-              <p className="text-base font-semibold">Tidak ada data Demand Plan</p>
-              <p className="text-sm mt-1">Upload excel atau isi demand untuk menambahkan data.</p>
+              <p className="text-base font-semibold">Belum ada periode</p>
+              <p className="text-sm mt-1">
+                Buat periode dulu (mis. September 2026), lalu upload data MRP ke periode itu.
+              </p>
             </div>
           )}
-          {allWeeks.length > 0 && (
-            <div
-              onClick={() => setSelectedMonth('ALL')}
-              className="cursor-pointer p-5 border-2 border-indigo-500/30 bg-gradient-to-br from-indigo-500/5 to-purple-500/10 hover:from-indigo-500/10 hover:to-purple-500/20 hover:border-indigo-500/60 rounded-lg transition-all flex items-center gap-4 group shadow-sm relative overflow-hidden"
-            >
-              <div className="p-3 bg-indigo-500/15 rounded-lg group-hover:bg-indigo-500/25 transition-colors">
-                <Folder className="w-8 h-8 text-indigo-600 dark:text-indigo-400 fill-indigo-500/20" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="font-bold text-foreground group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                    Semua Periode
-                  </h3>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 uppercase tracking-wider">
-                    All
-                  </span>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {periods.map((p) => (
+              <div
+                key={p.id}
+                onClick={() => setSelectedPeriodId(p.id)}
+                className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
+              >
+                <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
+                  <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
                 </div>
-                <p className="text-xs text-muted-foreground mt-0.5">{allWeeks.length} Minggu (W{allWeeks[0]} - W{allWeeks[allWeeks.length - 1]})</p>
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-foreground flex items-center gap-1.5">
+                    <span className="truncate">{p.label}</span>
+                    {p.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+                  </h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {p.counts.MRP} baris MRP · {p.counts.WIP} WIP · {p.counts.HOTLIST} Hot List
+                  </p>
+                </div>
               </div>
+            ))}
+
+            <div className="p-5 border-2 border-dashed rounded-lg bg-card flex flex-col gap-3 justify-center">
+              <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+                <CalendarPlus className="w-4 h-4" /> Buat Periode Baru
+              </div>
+              <input
+                type="month"
+                value={newPeriodMonth}
+                onChange={(e) => setNewPeriodMonth(e.target.value)}
+                className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <button
+                onClick={handleCreatePeriod}
+                disabled={!newPeriodMonth || createPeriod.isPending}
+                className="w-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 px-3 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2"
+              >
+                {createPeriod.isPending ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+                Buat {newPeriodMonth ? monthLabel(newPeriodMonth) : 'Periode'}
+              </button>
             </div>
-          )}
-          {groupedMonths.map(([monthKey, monthWeeks]) => (
-            <div
-              key={monthKey}
-              onClick={() => setSelectedMonth(monthKey)}
-              className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
-            >
-              <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
-                <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
-              </div>
-              <div>
-                <h3 className="font-semibold text-foreground">
-                  {new Date(monthKey + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
-                </h3>
-                <p className="text-xs text-muted-foreground mt-0.5">{monthWeeks.length} Minggu (W{monthWeeks[0]} - W{monthWeeks[monthWeeks.length - 1]})</p>
-              </div>
-            </div>
-          ))}
+          </div>
         </div>
       ) : (
       <>
         <div className="flex items-center gap-3 mb-2 animate-in fade-in slide-in-from-bottom-2">
           <button 
-            onClick={() => setSelectedMonth(null)}
+            onClick={() => setSelectedPeriodId(null)}
             className="p-2 hover:bg-background rounded-md border text-muted-foreground hover:text-foreground transition-colors shrink-0 bg-card"
-            title="Kembali ke Folder"
+            title="Kembali ke daftar periode"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
           <h3 className="font-semibold text-lg">
-            {selectedMonth === 'ALL' 
-              ? 'Semua Periode (26-Week Demand Plan)' 
-              : new Date(selectedMonth + '-01').toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
+            {selectedPeriod?.label ?? 'Periode'} (26-Week Demand Plan)
           </h3>
         </div>
       <div className="bg-card text-card-foreground border rounded-lg shadow-sm overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
@@ -623,7 +653,7 @@ export function WeeklyDemand() {
               onChange={(e) => { setSearch(e.target.value); setRowPage(0); }}
             />
           </div>
-          {allWeeks.length > 0 && !selectedMonth && (
+          {allWeeks.length > 0 && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span>Week {visibleWeeks[0]}–{visibleWeeks[visibleWeeks.length - 1]}</span>
               <button
@@ -808,6 +838,9 @@ export function WeeklyDemand() {
             </div>
 
             <div className="p-6 flex-1 overflow-auto space-y-5">
+              {/* Periode tujuan — wajib dipilih sebelum bisa menyimpan */}
+              <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="max-w-md" />
+
               {/* Upload */}
               <div className="space-y-2">
                 <p className="text-sm text-muted-foreground">
@@ -947,7 +980,7 @@ export function WeeklyDemand() {
               </button>
               <button
                 onClick={() => handleBulkSave('add')}
-                disabled={bulkUpsert.isPending || importRows.length === 0}
+                disabled={bulkUpsert.isPending || importRows.length === 0 || !targetPeriodId}
                 className="h-10 bg-green-600 hover:bg-green-700 text-white px-6 rounded-md font-medium flex items-center gap-2 disabled:opacity-50 text-sm transition-colors"
               >
                 <Plus size={16} />
@@ -955,7 +988,7 @@ export function WeeklyDemand() {
               </button>
               <button
                 onClick={() => handleBulkSave('overwrite')}
-                disabled={bulkUpsert.isPending || importRows.length === 0}
+                disabled={bulkUpsert.isPending || importRows.length === 0 || !targetPeriodId}
                 className="h-10 bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 text-white px-6 rounded-md font-medium flex items-center gap-2 disabled:opacity-50 text-sm transition-colors"
               >
                 <Save size={16} />

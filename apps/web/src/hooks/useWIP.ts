@@ -1,8 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchApi } from '../lib/api';
+import { PERIOD_QUERY_KEY } from './usePeriods';
 
 export interface WIP {
   id: string;
+  periodId: string;
   location: string;
   quantity: number;
   progressPercent: number;
@@ -21,10 +23,17 @@ export interface WIP {
   };
 }
 
-export function useWIPs() {
+/**
+ * Data WIP. Kalau `periodId` diberikan (selalu begitu di halaman WIP), data
+ * difilter untuk periode itu saja. Tanpa `periodId` (mis. halaman Master Item
+ * yang hanya memakai daftar nama lokasi) data diambil semua — angka WIP tidak
+ * pernah ditampilkan di sana.
+ */
+export function useWIPs(periodId?: string | null) {
   return useQuery<{ data: WIP[] }, Error>({
-    queryKey: ['wips'],
-    queryFn: () => fetchApi('/wip'),
+    queryKey: ['wips', periodId ?? 'ALL'],
+    queryFn: () =>
+      fetchApi(periodId ? `/wip?periodId=${encodeURIComponent(periodId)}` : '/wip'),
   });
 }
 
@@ -42,6 +51,7 @@ export function useUpsertWIP() {
       status?: string;
       notes?: string;
       saveMode?: 'overwrite' | 'add';
+      periodId: string;
     }) => 
       fetchApi('/wip', {
         method: 'POST',
@@ -50,6 +60,7 @@ export function useUpsertWIP() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['wips'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: PERIOD_QUERY_KEY });
     },
   });
 }
@@ -97,7 +108,7 @@ export function useBulkUpsertWIP() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: (data: { records: any[]; saveMode?: 'overwrite' | 'add' }) => 
+    mutationFn: (data: { records: any[]; saveMode?: 'overwrite' | 'add'; periodId: string }) => 
       fetchApi('/wip/bulk', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -105,6 +116,7 @@ export function useBulkUpsertWIP() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['wips'] });
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: PERIOD_QUERY_KEY });
     },
   });
 }

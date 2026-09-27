@@ -3,17 +3,16 @@ import {
   useCalculateCycle,
   useCreateCycle,
   useCycleAudit,
+  useCycleDataStatus,
   useCycleResultDetail,
-  useCycleResults,
   useCycles,
   useCycleRetentionAction,
-  useCycleSources,
   useExpiredCycles,
-  useImportLiveIntoCycle,
   useNpofCheck,
-  usePatchCycleResult,
+  usePeriodSourceRows,
   type CycleAuditEntry,
   type CycleCalculationResult,
+  type CycleSourceRow,
   type CycleSummary,
   type ExpiredCycle,
   type MaterialGroup,
@@ -23,16 +22,14 @@ import {
 } from '../hooks/useMaterialCalc';
 import {
   AlertTriangle,
-  Bookmark,
+  ArrowLeft,
   Calculator,
   CheckCircle,
   ChevronDown,
   ChevronRight,
-  Copy,
   Folder,
   FolderOpen,
   History,
-  Info,
   Loader2,
   Lock,
   Plus,
@@ -490,6 +487,108 @@ function ConfirmDialog({
 
 // ── Halaman utama ─────────────────────────────────────────────────────────
 
+/**
+ * Kolom tabel untuk isi folder data master periode. Dipakai agar isi tiap folder
+ * (MRP / WIP / HOT LIST / STOCK RM / OS PO) bisa dibuka dari halaman ini tanpa
+ * menduplikasi data — sumbernya tetap endpoint Master Data dengan ?periodId=.
+ */
+const SOURCE_COLUMNS: Record<string, { key: string; label: string; numeric?: boolean }[]> = {
+  MRP: [
+    { key: 'item.partNumber', label: 'Part Number' },
+    { key: 'item.itemName', label: 'Description' },
+    { key: 'year', label: 'Tahun', numeric: true },
+    { key: 'weekNumber', label: 'Minggu', numeric: true },
+    { key: 'quantity', label: 'Qty', numeric: true },
+    { key: 'weekStartDate', label: 'Mulai Minggu' },
+  ],
+  WIP: [
+    { key: 'item.partNumber', label: 'Part Number' },
+    { key: 'item.itemName', label: 'Description' },
+    { key: 'location', label: 'Lokasi' },
+    { key: 'quantity', label: 'Qty', numeric: true },
+    { key: 'status', label: 'Status' },
+    { key: 'date', label: 'Tanggal' },
+  ],
+  HOTLIST: [
+    { key: 'partNumber', label: 'Part Number' },
+    { key: 'biTotal', label: 'BI Total', numeric: true },
+    { key: 'date', label: 'Tanggal' },
+    { key: 'previousDate', label: 'Tanggal Sebelumnya' },
+  ],
+  STOCK_RM: [
+    { key: 'itemDesc', label: 'Item' },
+    { key: 'supplier', label: 'Supplier' },
+    { key: 'qty', label: 'Qty', numeric: true },
+    { key: 'unit', label: 'Satuan' },
+    { key: 'date', label: 'Tanggal' },
+  ],
+  OUTSTANDING_PO: [
+    { key: 'planReceivedDate', label: 'Tgl Rencana' },
+    { key: 'supplierName', label: 'Supplier' },
+    { key: 'itemDesc', label: 'Item' },
+    { key: 'qtyOrder', label: 'Qty Order', numeric: true },
+    { key: 'qtyOrderUnit', label: 'Satuan' },
+    { key: 'qtyDelivered', label: 'Terkirim', numeric: true },
+  ],
+};
+
+function getPath(row: unknown, path: string): unknown {
+  return path.split('.').reduce<unknown>((acc, k) => {
+    if (acc === null || acc === undefined) return undefined;
+    return (acc as Record<string, unknown>)[k];
+  }, row);
+}
+
+/** Tabel isi folder data master. Dibatasi 300 baris agar MRP 16.000 baris tetap ringan. */
+function SourceRowsTable({ sourceType, rows }: { sourceType: string; rows: Record<string, unknown>[] }) {
+  const cols = SOURCE_COLUMNS[sourceType] ?? [];
+  const LIMIT = 300;
+  const shown = rows.slice(0, LIMIT);
+
+  return (
+    <div>
+      <div className="px-4 py-3 border-b bg-gray-50 text-xs text-gray-500">
+        {formatNum(rows.length, 0)} baris
+        {rows.length > LIMIT ? ` · menampilkan ${LIMIT} baris pertama` : ''}
+      </div>
+      <div className="overflow-x-auto max-h-[65vh]">
+        <table className="w-full text-sm">
+          <thead className="text-xs text-gray-500 uppercase bg-gray-50/70 sticky top-0">
+            <tr>
+              {cols.map((c) => (
+                <th
+                  key={c.key}
+                  className={`px-4 py-2 font-semibold whitespace-nowrap ${c.numeric ? 'text-right' : 'text-left'}`}
+                >
+                  {c.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {shown.map((r, i) => (
+              <tr key={i} className="hover:bg-gray-50/60">
+                {cols.map((c) => {
+                  const v = getPath(r, c.key);
+                  const text = v === null || v === undefined || v === '' ? '—' : String(v);
+                  return (
+                    <td
+                      key={c.key}
+                      className={`px-4 py-2 text-gray-700 whitespace-nowrap ${c.numeric ? 'text-right tabular-nums' : ''}`}
+                    >
+                      {text}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 const SOURCE_LABELS: Record<string, string> = {
   MRP: 'MRP 26 weeks',
   HOTLIST: 'Hot List',
@@ -504,20 +603,16 @@ export function MaterialCalc() {
 
   const [selectedCycleId, setSelectedCycleId] = useState('');
   const activeCycle: CycleSummary | undefined = useMemo(
-    () => cycles.find((c) => c.id === selectedCycleId) ?? cycles[0],
+    () => cycles.find((c) => c.id === selectedCycleId),
     [cycles, selectedCycleId],
   );
   const cycleId = activeCycle?.id ?? null;
 
-  const { data: sourcesData } = useCycleSources(cycleId);
-  const { data: resultsData } = useCycleResults(cycleId);
   const { data: npofCheck } = useNpofCheck(cycleId, Boolean(activeCycle?.currentResult));
   const { data: expiredData } = useExpiredCycles();
 
   const createCycle = useCreateCycle();
-  const importLive = useImportLiveIntoCycle();
   const calculate = useCalculateCycle();
-  const patchResult = usePatchCycleResult();
   const retention = useCycleRetentionAction();
 
   const [calcResult, setCalcResult] = useState<CycleCalculationResult | null>(null);
@@ -539,8 +634,21 @@ export function MaterialCalc() {
   const [retentionMonths, setRetentionMonths] = useState(6);
   /** null = tampilkan semua tipe, string = filter ke tipe tertentu */
   const [selectedMaterialType, setSelectedMaterialType] = useState<string | null>(null);
-  /** apakah panel Kelengkapan Data ditampilkan */
-  const [showSources, setShowSources] = useState(false);
+  /**
+   * Folder yang sedang dibuka di dalam periode terpilih:
+   *  null    -> daftar sub-folder periode (Calculation / MRP / WIP / HOT LIST / STOCK RM / OS PO)
+   *  'CALC'  -> isi folder Calculation (folder per material)
+   *  lainnya -> tabel data master periode (MRP/WIP/HOTLIST/STOCK_RM/OUTSTANDING_PO)
+   */
+  const [openFolder, setOpenFolder] = useState<string | null>(null);
+
+  // Validitas hasil perhitungan periode ini terhadap data master SEKARANG.
+  const { data: dataStatusData } = useCycleDataStatus(cycleId);
+  const dataStatus = dataStatusData?.data ?? null;
+  const { data: sourceRowsData, isLoading: sourceRowsLoading } = usePeriodSourceRows(
+    cycleId,
+    openFolder && openFolder !== 'CALC' ? openFolder : null,
+  );
 
 
   const { data: auditData } = useCycleAudit(cycleId, showAudit);
@@ -551,7 +659,6 @@ export function MaterialCalc() {
   const groups = shown?.groups ?? [];
   const shortageGroups = groups.filter((g) => !g.isSufficient).length;
   const sufficientGroups = groups.filter((g) => g.isSufficient).length;
-  const coverage = shown?.totals;
 
   /** Kelompokkan groups per materialType, dengan urutan tampilan yang konsisten. */
   const MATERIAL_ORDER = ['Paper', 'PET', 'Flute', 'Lainnya'];
@@ -609,19 +716,6 @@ export function MaterialCalc() {
     void doCalculate();
   };
 
-  const handleCopyLive = async () => {
-    if (!cycleId) return;
-    try {
-      const res = (await importLive.mutateAsync({ cycleId, sources: ['ALL'] })) as {
-        data: { source: string; inserted: number }[];
-      };
-      const total = res.data.reduce((s, r) => s + r.inserted, 0);
-      setToast({ kind: 'ok', text: `Data Master Data disalin: ${formatNum(total, 0)} baris masuk ke periode ini.` });
-    } catch (e) {
-      setToast({ kind: 'err', text: e instanceof Error ? e.message : 'Gagal menyalin data' });
-    }
-  };
-
   const handleCreatePeriod = async () => {
     try {
       const res = (await createCycle.mutateAsync({ uploadMonth: newMonth, label: newLabel || undefined })) as {
@@ -638,7 +732,6 @@ export function MaterialCalc() {
     }
   };
 
-  const runs = resultsData?.data ?? [];
   const expired = expiredData?.data ?? [];
 
   return (
@@ -680,223 +773,208 @@ export function MaterialCalc() {
         </div>
       )}
 
-      {/* Pemilih periode */}
-      <div className="card p-4">
-        <div className="flex flex-col lg:flex-row items-start lg:items-end gap-4">
-          <div className="w-full lg:w-auto">
-            <label className="block text-sm font-medium text-gray-700 mb-1">Periode</label>
-            <select
-              value={activeCycle?.id ?? ''}
-              disabled={isLoadingCycles || cycles.length === 0}
-              onChange={(e) => {
-                setSelectedCycleId(e.target.value);
-                setCalcResult(null);
-                setSelectedRunId(null);
-              }}
-              className="input min-w-72"
-            >
-              {cycles.length === 0 && <option value="">Belum ada periode</option>}
-              {cycles.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          </div>
+      {/* ══════════════════════════════════════════════════════════════
+          Level 1 — daftar FOLDER PERIODE
+         ══════════════════════════════════════════════════════════════ */}
+      {!activeCycle && (
+        <div className="space-y-4">
+          {cycles.length === 0 && !isLoadingCycles && (
+            <div className="card p-12 text-center text-gray-400">
+              <Folder className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+              <p className="font-medium text-gray-600">Belum ada periode</p>
+              <p className="text-sm mt-1">
+                Buat periode dulu (mis. September 2026), upload data master-nya di menu Master Data, lalu hitung di sini.
+              </p>
+            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {cycles.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => {
+                  setSelectedCycleId(c.id);
+                  setOpenFolder(null);
+                  setSelectedRunId(null);
+                  setCalcResult(null);
+                }}
+                className="card p-5 text-left hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors flex items-start gap-3"
+              >
+                <div className="p-2.5 rounded-lg bg-indigo-50 shrink-0">
+                  <Folder className="w-7 h-7 text-indigo-600 fill-indigo-500/20" />
+                </div>
+                <div className="min-w-0">
+                  <div className="font-semibold text-gray-900 truncate flex items-center gap-1.5">
+                    {c.label}
+                    {c.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5">
+                    {c.currentResult ? `Dihitung ${formatDateTime(c.currentResult.calculatedAt)}` : 'Belum dihitung'}
+                  </div>
+                  {c.derivedStatus === 'STALE' && (
+                    <div className="text-xs text-amber-600 font-medium mt-1">⚠ Perlu dihitung ulang</div>
+                  )}
+                </div>
+              </button>
+            ))}
 
-          <button
-            type="button"
-            onClick={() => setShowNewPeriod(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border text-gray-700 hover:bg-gray-50"
-          >
-            <Plus className="w-4 h-4" />
-            Buat Periode Baru
-          </button>
-
-          <div className="flex-1" />
-
-          <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={handleCopyLive}
-              disabled={!cycleId || importLive.isPending}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+              onClick={() => setShowNewPeriod(true)}
+              className="p-5 border-2 border-dashed rounded-lg bg-white hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors flex items-center gap-3 text-gray-500"
             >
-              {importLive.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Copy className="w-4 h-4" />}
-              Salin dari Master Data
-            </button>
-            <button
-              type="button"
-              onClick={handleCalculate}
-              disabled={!cycleId || calculate.isPending || activeCycle?.isLocked}
-              className="btn btn-primary"
-            >
-              {calculate.isPending ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <RefreshCw className="w-4 h-4 mr-2" />
-              )}
-              {calculate.isPending ? 'Menghitung...' : 'Hitung'}
+              <Plus className="w-6 h-6" />
+              <span className="font-medium">Buat Periode Baru</span>
             </button>
           </div>
         </div>
+      )}
 
-        {activeCycle && (
-          <div className="mt-3 text-xs text-gray-500 space-y-1">
-            <div>{activeCycle.displayText}</div>
-            <div>
-              MRP {activeCycle.weekCount} minggu: {formatWeekDate(activeCycle.mrpStartDate)} –{' '}
-              {formatWeekDate(activeCycle.mrpEndDate)}
+      {/* ══════════════════════════════════════════════════════════════
+          Level 2/3 — isi folder periode
+         ══════════════════════════════════════════════════════════════ */}
+      {activeCycle && (
+        <>
+          <div className="card p-4">
+            <div className="flex flex-col lg:flex-row lg:items-center gap-4">
+              <button
+                type="button"
+                onClick={() => {
+                  if (openFolder) setOpenFolder(null);
+                  else setSelectedCycleId('');
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border text-gray-700 hover:bg-gray-50 shrink-0"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                {openFolder ? 'Kembali ke periode' : 'Semua periode'}
+              </button>
+
+              <div className="min-w-0">
+                <div className="text-sm text-gray-800 flex items-center gap-1.5">
+                  <Folder className="w-4 h-4 text-indigo-600 shrink-0" />
+                  <span className="font-semibold truncate">{activeCycle.label}</span>
+                  {openFolder && (
+                    <>
+                      <ChevronRight className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                      <span className="truncate text-gray-600">
+                        {openFolder === 'CALC' ? 'Calculation' : (SOURCE_LABELS[openFolder] ?? openFolder)}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  {activeCycle.displayText}
+                  {activeCycle.mrpStartDate && activeCycle.mrpEndDate && (
+                    <>
+                      {' '}
+                      · MRP {activeCycle.weekCount} minggu: {formatWeekDate(activeCycle.mrpStartDate)} –{' '}
+                      {formatWeekDate(activeCycle.mrpEndDate)}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex-1" />
+
+              <button
+                type="button"
+                onClick={handleCalculate}
+                disabled={calculate.isPending || activeCycle.isLocked}
+                className="btn btn-primary shrink-0"
+              >
+                {calculate.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                )}
+                {calculate.isPending ? 'Menghitung...' : dataStatus?.hasResult ? 'Hitung Ulang' : 'Hitung'}
+              </button>
             </div>
           </div>
-        )}
-      </div>
 
-      {/* Panel sumber data */}
-      {activeCycle && (
-        <div className="card overflow-hidden">
-          {/* ── Header (selalu tampil) ── */}
-          <button
-            type="button"
-            onClick={() => setShowSources((v) => !v)}
-            className="w-full px-4 py-3 border-b bg-gray-50 flex items-center justify-between hover:bg-gray-100 transition-colors"
-          >
-            <span className="font-semibold text-sm text-gray-800">
-              Kelengkapan Data Periode {activeCycle.label}
-            </span>
-            <span className="flex items-center gap-1.5 text-xs text-gray-500">
-              {showSources ? (
-                <><ChevronDown className="w-4 h-4" /> Sembunyikan</>
-              ) : (
-                <><ChevronRight className="w-4 h-4" /> Lihat detail</>
-              )}
-            </span>
-          </button>
-
-          {/* ── Konten (kolaps) ── */}
-          {showSources && (
-            <>
-              <table className="w-full text-sm">
-                <thead className="text-xs text-gray-500 uppercase bg-gray-50/70">
-                  <tr>
-                    <th className="px-4 py-2 text-left font-semibold">Sumber</th>
-                    <th className="px-4 py-2 text-right font-semibold">Baris</th>
-                    <th className="px-4 py-2 text-left font-semibold">Diupload</th>
-                    <th className="px-4 py-2 text-center font-semibold">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {(sourcesData?.data ?? []).map((s) => (
-                    <tr key={s.sourceType}>
-                      <td className="px-4 py-2 text-gray-800">{SOURCE_LABELS[s.sourceType] ?? s.sourceType}</td>
-                      <td className="px-4 py-2 text-right tabular-nums text-gray-700">{formatNum(s.rowCount, 0)}</td>
-                      <td className="px-4 py-2 text-gray-600">{formatDateTime(s.uploadedAt)}</td>
-                      <td className="px-4 py-2 text-center">
-                        {s.rowCount > 0 ? (
-                          <CheckCircle className="w-4 h-4 text-green-600 inline" />
-                        ) : (
-                          <AlertTriangle className="w-4 h-4 text-amber-500 inline" />
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  <tr className="bg-gray-50/60">
-                    <td className="px-4 py-2 text-gray-700">
-                      NPOF <span className="text-[11px] text-gray-500">↻ referensi bersama semua periode</span>
-                    </td>
-                    <td className="px-4 py-2 text-right tabular-nums text-gray-700">
-                      {formatNum(activeCycle.npofInfo.totalRows, 0)}
-                    </td>
-                    <td className="px-4 py-2 text-gray-600">{formatDateTime(activeCycle.npofInfo.lastUpdatedAt)}</td>
-                    <td className="px-4 py-2 text-center text-[11px] text-gray-500">
-                      {activeCycle.npofInfo.changedSinceCalculation ? 'berubah sejak hitung terakhir' : 'tidak berubah'}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-
-              {coverage && coverage.partsWithoutNpof > 0 && (
-                <div className="px-4 py-3 border-t bg-amber-50 text-xs text-amber-800 flex items-start gap-2">
-                  <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                  <div>
-                    <div>
-                      {formatNum(coverage.partsWithoutNpof, 0)} dari {formatNum(coverage.partCount, 0)} part tidak punya data
-                      NPOF → dihitung dengan estimasi jumbo roll 180 cm.
-                    </div>
-                    <div className="mt-0.5">
-                      {formatNum(coverage.partsWithStock, 0)} part mendapat alokasi stok/PO, total{' '}
-                      {formatNum(coverage.allocatedKg, 0)} kg.
-                    </div>
+          {/* Hasil tidak valid karena data master berubah setelah perhitungan */}
+          {dataStatus?.isInvalid && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+              <div className="flex-1 text-sm text-amber-900">
+                <div className="font-medium">{dataStatus.invalidReason}</div>
+                {dataStatus.changedSources.length > 0 && (
+                  <div className="text-xs mt-0.5">
+                    Data berubah: {dataStatus.changedSources.map((s) => SOURCE_LABELS[s] ?? s).join(', ')}
                   </div>
-                </div>
-              )}
-            </>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={handleCalculate}
+                disabled={calculate.isPending || activeCycle.isLocked}
+                className="btn btn-primary shrink-0"
+              >
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Hitung Ulang
+              </button>
+            </div>
           )}
-        </div>
+
+          {/* Level 2 — sub-folder periode */}
+          {!openFolder && (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+              <button
+                type="button"
+                onClick={() => setOpenFolder('CALC')}
+                className="card p-5 text-left hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors"
+              >
+                <Calculator className="w-7 h-7 text-indigo-600 mb-2" />
+                <div className="font-semibold text-gray-900">Calculation</div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  {dataStatus?.hasResult ? `${formatNum(groups.length, 0)} grup material` : 'Belum dihitung'}
+                </div>
+              </button>
+
+              {(['MRP', 'WIP', 'HOTLIST', 'STOCK_RM', 'OUTSTANDING_PO'] as const).map((key) => {
+                const rowCount = activeCycle.sources.find((s: CycleSourceRow) => s.sourceType === key)?.rowCount ?? 0;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setOpenFolder(key)}
+                    className="card p-5 text-left hover:border-indigo-400 hover:bg-indigo-50/30 transition-colors"
+                  >
+                    <FolderOpen className="w-7 h-7 text-blue-600 mb-2" />
+                    <div className="font-semibold text-gray-900">{SOURCE_LABELS[key] ?? key}</div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      {formatNum(rowCount, 0)} baris
+                      {dataStatus?.changedSources.includes(key) && (
+                        <span className="text-amber-600 font-medium"> · berubah</span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Level 3b — isi folder data master periode ini */}
+          {openFolder && openFolder !== 'CALC' && (
+            <div className="card overflow-hidden">
+              {sourceRowsLoading ? (
+                <div className="p-10 text-center text-gray-400">
+                  <Loader2 className="w-6 h-6 mx-auto animate-spin" />
+                </div>
+              ) : (sourceRowsData?.data ?? []).length === 0 ? (
+                <div className="p-10 text-center text-gray-400">
+                  Belum ada data {SOURCE_LABELS[openFolder] ?? openFolder} untuk periode ini.
+                </div>
+              ) : (
+                <SourceRowsTable sourceType={openFolder} rows={sourceRowsData?.data ?? []} />
+              )}
+            </div>
+          )}
+        </>
       )}
 
-      {/* Riwayat perhitungan */}
-      {runs.length > 0 && (
-        <div className="card overflow-hidden">
-          <div className="px-4 py-3 border-b bg-gray-50 font-semibold text-sm text-gray-800 flex items-center justify-between">
-            <span>Riwayat Perhitungan</span>
-            <span className="text-xs font-normal text-gray-500">
-              Hanya hasil yang sedang aktif dan yang ditandai tersimpan yang disimpan.
-            </span>
-          </div>
-          <table className="w-full text-sm">
-            <tbody className="divide-y divide-gray-100">
-              {runs.map((r) => (
-                <tr key={r.id} className={r.isCurrent ? 'bg-indigo-50/40' : ''}>
-                  <td className="px-4 py-2 font-medium text-gray-800">run #{r.runNumber}</td>
-                  <td className="px-4 py-2 text-gray-600">{formatDateTime(r.calculatedAt)}</td>
-                  <td className="px-4 py-2">
-                    {r.isCurrent && <span className="text-xs text-green-700 font-medium">✅ aktif</span>}
-                    {r.isSaved && (
-                      <span className="text-xs text-indigo-700 font-medium ml-2">
-                        💾 tersimpan{r.savedNote ? ` — "${r.savedNote}"` : ''}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-2 text-right space-x-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSelectedRunId(r.id);
-                        setCalcResult(null);
-                      }}
-                      className="text-xs px-3 py-1.5 rounded-md border text-gray-700 hover:bg-gray-50"
-                    >
-                      Lihat
-                    </button>
-                    {r.isCurrent && !r.isSaved && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const note = window.prompt('Catatan versi ini (opsional):', '') ?? '';
-                          void patchResult.mutateAsync({
-                            cycleId: activeCycle!.id,
-                            resultId: r.id,
-                            isSaved: true,
-                            savedNote: note,
-                          });
-                        }}
-                        className="text-xs px-3 py-1.5 rounded-md bg-indigo-600 text-white inline-flex items-center gap-1"
-                      >
-                        <Bookmark className="w-3.5 h-3.5" />
-                        Simpan sebagai versi
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Hasil */}
-      {groups.length > 0 && (
+      {/* Hasil — hanya di dalam folder Calculation */}
+      {openFolder === 'CALC' && groups.length > 0 && (
         <>
           {/* ── Ringkasan angka ── */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1016,15 +1094,16 @@ export function MaterialCalc() {
         </>
       )}
 
-      {activeCycle && groups.length === 0 && !calculate.isPending && (
+      {openFolder === 'CALC' && groups.length === 0 && !calculate.isPending && (
         <div className="card p-12 text-center text-gray-400">
           <Calculator className="w-12 h-12 mx-auto mb-3 text-gray-300" />
           <p className="font-medium text-gray-600">
-            {activeCycle.currentResult ? 'Klik "Lihat" pada riwayat untuk membuka hasil' : 'Klik "Hitung" untuk menjalankan kalkulasi'}
+            {activeCycle?.currentResult ? 'Klik "Hitung Ulang" untuk menghitung ulang periode ini' : 'Klik "Hitung" untuk menjalankan kalkulasi'}
           </p>
           <p className="text-sm mt-1">
-            Kalau data periode masih kosong, tekan "Salin dari Master Data" dulu agar data MRP, Hotlist, Stock, PO, dan
-            WIP masuk ke periode ini.
+            Kalau data periode masih kosong, upload dulu di menu <span className="font-medium">Master Data</span> (26-Week
+            Demand, WIP, Hot List, Stock Raw Material, Outstanding PO) dan pilih periode{' '}
+            <strong>{activeCycle?.label}</strong>.
           </p>
         </div>
       )}

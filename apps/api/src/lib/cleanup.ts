@@ -39,25 +39,28 @@ export async function cleanupOldRecords(): Promise<{
   const cutoff13Months = get13MonthsCutoffDate();
 
   try {
-    const [dailyResult, weeklyResult, hotlistResult, stockResult, wipResult] = await Promise.all([
+    // ⚠️ SEJAK 2026-09-28: tabel `weekly_schedules`, `hotlists`,
+    // `stock_raw_materials`, dan `wips` adalah DATA PERIODE (punya `periodId`).
+    // Menghapusnya berdasarkan tanggal DI DALAM data akan merusak periode lama
+    // secara diam-diam (dan tanpa menandai hasil hitungnya tidak valid).
+    // Retensi tabel-tabel itu sekarang HANYA lewat `cleanupOldCycles()`
+    // (berbasis periode, 18 bulan, dengan notifikasi). Yang tetap di sini hanya
+    // `daily_schedules` karena bukan data periode.
+    const [dailyResult] = await Promise.all([
       prisma.dailySchedule.deleteMany({
         where: { date: { lt: cutoff14Days } },
       }),
-      prisma.weeklySchedule.deleteMany({
-        where: { weekEndDate: { lt: cutoff13Months } },
-      }),
-      prisma.hotlist.deleteMany({
-        where: { date: { lt: cutoff13Months } },
-      }),
-      prisma.stockRawMaterial.deleteMany({
-        where: { date: { lt: cutoff13Months } },
-      }),
-      prisma.wIP.deleteMany({
-        where: { date: { lt: cutoff13Months } },
-      }),
     ]);
 
-    const total = dailyResult.count + weeklyResult.count + hotlistResult.count + stockResult.count + wipResult.count;
+    // Tetap dihitung agar bentuk respons tidak berubah bagi pemanggil lama.
+    const weeklyResult = { count: 0 };
+    const hotlistResult = { count: 0 };
+    const stockResult = { count: 0 };
+    const wipResult = { count: 0 };
+    void cutoff13Months;
+    void get13MonthsCutoffDate;
+
+    const total = dailyResult.count;
     if (total > 0) {
       console.log(
         `[Cleanup] Removed records: ${dailyResult.count} daily (14d), ${weeklyResult.count} weekly, ${hotlistResult.count} hotlist, ${stockResult.count} stock, ${wipResult.count} wip (13m)`,

@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, Fragment } from 'react';
+import { useEffect, useState, useRef, useMemo, Fragment } from 'react';
 import {
   useOutstandingPO,
   useUploadOutstandingPO,
@@ -9,11 +9,38 @@ import {
   useImportOutstandingPO,
   type OutstandingPOData
 } from '../hooks/useOutstandingPO';
-import { FileSpreadsheet, Plus, Upload, Loader2, Search, Pencil, Trash2, X, Check, Save, Folder, ArrowLeft, ChevronDown, ChevronRight, ChevronsDown, ChevronsUp } from 'lucide-react';
+import { FileSpreadsheet, Plus, Upload, Loader2, Search, Pencil, Trash2, X, Check, Save, Folder, ArrowLeft, ChevronDown, ChevronRight, ChevronsDown, ChevronsUp, Lock, CalendarPlus } from 'lucide-react';
+import { usePeriods, useCreatePeriod, monthLabel } from '../hooks/usePeriods';
+import { PeriodSelect } from '../components/PeriodSelect';
 import { format } from 'date-fns';
 
 export function OutstandingPO() {
-  const { data: poData, isLoading } = useOutstandingPO();
+  // Periode upload = keranjang data. WAJIB dipilih sebelum upload/isi manual.
+  const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
+  // Periode tujuan untuk Import / Add Manual. Ikut periode yang sedang dibuka,
+  // tapi tetap bisa diganti langsung dari dalam form.
+  const [targetPeriodId, setTargetPeriodId] = useState<string | null>(null);
+  useEffect(() => {
+    if (selectedPeriodId) setTargetPeriodId(selectedPeriodId);
+  }, [selectedPeriodId]);
+  const [newPeriodMonth, setNewPeriodMonth] = useState('');
+  const { data: periodsRes, isLoading: periodsLoading } = usePeriods();
+  const periods = periodsRes?.data ?? [];
+  const selectedPeriod = periods.find((p) => p.id === selectedPeriodId) ?? null;
+  const targetPeriod = periods.find((p) => p.id === targetPeriodId) ?? null;
+  const createPeriod = useCreatePeriod();
+  const { data: poData, isLoading } = useOutstandingPO(selectedPeriodId);
+
+  const handleCreatePeriod = async () => {
+    if (!newPeriodMonth) return;
+    try {
+      const res = await createPeriod.mutateAsync({ uploadMonth: newPeriodMonth });
+      setNewPeriodMonth('');
+      setSelectedPeriodId(res.data.id);
+    } catch (error: any) {
+      alert(error.message || 'Gagal membuat periode.');
+    }
+  };
   const uploadMutation = useUploadOutstandingPO();
   const importMutation = useImportOutstandingPO();
   const addManualMutation = useAddManualOutstandingPO();
@@ -82,15 +109,23 @@ export function OutstandingPO() {
 
   const handleSaveImport = (mode: 'add' | 'overwrite') => {
     if (previewData.length === 0) return;
-    
-    let confirmMsg = 'Are you sure you want to add this data?';
+    if (!targetPeriodId) {
+      alert('Pilih periode dulu sebelum menyimpan data.');
+      return;
+    }
+
+    let confirmMsg = `Tambahkan ${previewData.length} baris ke periode "${targetPeriod?.label}"?`;
     if (mode === 'overwrite') {
-      confirmMsg = 'WARNING: This will delete ALL existing outstanding PO data and replace it with the uploaded data. Continue?';
+      const existing = targetPeriod?.counts.OUTSTANDING_PO ?? 0;
+      confirmMsg =
+        `PERHATIAN: seluruh data Outstanding PO di periode "${targetPeriod?.label}" (${existing} baris) ` +
+        `akan DIGANTI dengan ${previewData.length} baris dari file ini.\n\n` +
+        'Periode lain tidak terpengaruh. Lanjutkan?';
     }
 
     if (!window.confirm(confirmMsg)) return;
 
-    importMutation.mutate({ data: previewData, mode }, {
+    importMutation.mutate({ data: previewData, mode, periodId: targetPeriodId }, {
       onSuccess: () => {
         alert('Data imported successfully!');
         setPreviewData([]);
@@ -150,6 +185,11 @@ export function OutstandingPO() {
       return;
     }
 
+    if (!targetPeriodId) {
+      alert('Pilih periode dulu sebelum menambah data manual.');
+      return;
+    }
+
     addManualMutation.mutate({
       planReceivedDate: manualForm.planReceivedDate,
       supplierName: manualForm.supplierName,
@@ -158,6 +198,7 @@ export function OutstandingPO() {
       qtyOrderUnit: manualForm.qtyOrderUnit,
       qtyDelivered: parseFloat(manualForm.qtyDelivered),
       qtyDeliveredUnit: manualForm.qtyDeliveredUnit,
+      periodId: targetPeriodId,
     }, {
       onSuccess: () => {
         setManualForm({
@@ -241,27 +282,9 @@ export function OutstandingPO() {
     }
   };
 
-  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
-
   const records = poData || [];
-  
-  const groupedMonths = useMemo(() => {
-    const groups: Record<string, OutstandingPOData[]> = {};
-    records.forEach(record => {
-      const monthKey = format(new Date(record.planReceivedDate), 'yyyy-MM');
-      if (!groups[monthKey]) groups[monthKey] = [];
-      groups[monthKey].push(record);
-    });
-    return Object.entries(groups).sort((a, b) => b[0].localeCompare(a[0]));
-  }, [records]);
 
-  const currentMonthRecords = selectedMonth
-    ? selectedMonth === 'ALL'
-      ? records
-      : (groupedMonths.find(g => g[0] === selectedMonth)?.[1] || [])
-    : [];
-
-  const filteredRecords = currentMonthRecords.filter(record => 
+  const filteredRecords = records.filter(record => 
     record.itemDesc.toLowerCase().includes(searchTerm.toLowerCase()) || 
     record.supplierName.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -391,16 +414,19 @@ export function OutstandingPO() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
                 <input type="text" placeholder="Search preview..." className="w-full pl-9 pr-4 py-1.5 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" value={previewSearchTerm} onChange={(e) => setPreviewSearchTerm(e.target.value)} />
               </div>
-              <button onClick={() => handleSaveImport('add')} disabled={importMutation.isPending} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-md font-medium text-sm">
+              <button onClick={() => handleSaveImport('add')} disabled={importMutation.isPending || !targetPeriodId} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-md font-medium text-sm disabled:opacity-50">
                 {importMutation.isPending && importMutation.variables?.mode === 'add' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save (Add)
               </button>
-              <button onClick={() => handleSaveImport('overwrite')} disabled={importMutation.isPending} className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white hover:bg-red-700 rounded-md font-medium text-sm">
+              <button onClick={() => handleSaveImport('overwrite')} disabled={importMutation.isPending || !targetPeriodId} className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white hover:bg-red-700 rounded-md font-medium text-sm disabled:opacity-50">
                 {importMutation.isPending && importMutation.variables?.mode === 'overwrite' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save (Overwrite)
               </button>
               <button onClick={() => setPreviewData([])} disabled={importMutation.isPending} className="flex items-center gap-2 px-4 py-2 bg-muted text-muted-foreground hover:bg-muted/80 rounded-md font-medium text-sm">
                 <X className="w-4 h-4" /> Cancel
               </button>
             </div>
+          </div>
+          <div className="px-5 py-4 border-b bg-amber-50/40 dark:bg-amber-500/5">
+            <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="max-w-md" />
           </div>
           <div className="max-h-[60vh] overflow-auto">
             <table className="w-full text-sm text-left">
@@ -484,6 +510,11 @@ export function OutstandingPO() {
             <div className="bg-card border rounded-lg p-5 shadow-sm animate-in slide-in-from-top-2">
               <h2 className="text-sm font-semibold mb-4">Add Outstanding PO Manual</h2>
               <form onSubmit={handleManualSubmit} className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+                <PeriodSelect
+                  value={targetPeriodId}
+                  onChange={setTargetPeriodId}
+                  className="md:col-span-12"
+                />
                 <div className="space-y-1.5 md:col-span-3">
                   <label className="text-xs font-semibold text-muted-foreground uppercase">Plan Received Date</label>
                   <input type="date" className="w-full h-10 px-3 border rounded-md text-sm" value={manualForm.planReceivedDate} onChange={(e) => setManualForm({ ...manualForm, planReceivedDate: e.target.value })} required />
@@ -524,7 +555,7 @@ export function OutstandingPO() {
                 
                 <div className="flex gap-2 md:col-span-12 justify-end mt-2">
                   <button type="button" onClick={() => setIsManualOpen(false)} className="h-10 px-4 bg-muted text-muted-foreground rounded-md font-medium text-sm">Cancel</button>
-                  <button type="submit" disabled={addManualMutation.isPending} className="h-10 px-6 bg-primary text-primary-foreground rounded-md font-medium text-sm flex items-center justify-center gap-2">
+                  <button type="submit" disabled={addManualMutation.isPending || !targetPeriodId} className="h-10 px-6 bg-primary text-primary-foreground rounded-md font-medium text-sm flex items-center justify-center gap-2 disabled:opacity-50">
                     {addManualMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />} Save
                   </button>
                 </div>
@@ -533,68 +564,74 @@ export function OutstandingPO() {
           )}
 
           {/* Folder View or Data Table */}
-          {!selectedMonth ? (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 animate-in fade-in zoom-in-95 duration-200">
-              {groupedMonths.length === 0 && !isLoading && (
-                <div className="col-span-full py-12 text-center text-muted-foreground border rounded-lg bg-card">
+          {!selectedPeriodId ? (
+            <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
+              {periods.length === 0 && !periodsLoading && (
+                <div className="py-12 text-center text-muted-foreground border rounded-lg bg-card">
                   <FileSpreadsheet className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
-                  <p className="text-base font-semibold">Tidak ada data Outstanding PO</p>
-                  <p className="text-sm mt-1">Upload excel atau isi manual untuk menambahkan data.</p>
+                  <p className="text-base font-semibold">Belum ada periode</p>
+                  <p className="text-sm mt-1">
+                    Buat periode dulu (mis. September 2026), lalu upload data Outstanding PO ke periode itu.
+                  </p>
                 </div>
               )}
-              {records.length > 0 && (
-                <div
-                  onClick={() => setSelectedMonth('ALL')}
-                  className="cursor-pointer p-5 border-2 border-indigo-500/30 bg-gradient-to-br from-indigo-500/5 to-purple-500/10 hover:from-indigo-500/10 hover:to-purple-500/20 hover:border-indigo-500/60 rounded-lg transition-all flex items-center gap-4 group shadow-sm relative overflow-hidden"
-                >
-                  <div className="p-3 bg-indigo-500/15 rounded-lg group-hover:bg-indigo-500/25 transition-colors">
-                    <Folder className="w-8 h-8 text-indigo-600 dark:text-indigo-400 fill-indigo-500/20" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-bold text-foreground group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                        Semua Data
-                      </h3>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 uppercase tracking-wider">
-                        All
-                      </span>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {periods.map((p) => (
+                  <div
+                    key={p.id}
+                    onClick={() => setSelectedPeriodId(p.id)}
+                    className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
+                  >
+                    <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
+                      <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
                     </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">{records.length} Items (Total)</p>
+                    <div className="min-w-0">
+                      <h3 className="font-semibold text-foreground flex items-center gap-1.5">
+                        <span className="truncate">{p.label}</span>
+                        {p.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {p.counts.OUTSTANDING_PO} Baris PO · {p.counts.MRP} baris MRP
+                      </p>
+                    </div>
                   </div>
+                ))}
+
+                <div className="p-5 border-2 border-dashed rounded-lg bg-card flex flex-col gap-3 justify-center">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
+                    <CalendarPlus className="w-4 h-4" /> Buat Periode Baru
+                  </div>
+                  <input
+                    type="month"
+                    value={newPeriodMonth}
+                    onChange={(e) => setNewPeriodMonth(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                  <button
+                    onClick={handleCreatePeriod}
+                    disabled={!newPeriodMonth || createPeriod.isPending}
+                    className="w-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 px-3 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2"
+                  >
+                    {createPeriod.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                    Buat {newPeriodMonth ? monthLabel(newPeriodMonth) : 'Periode'}
+                  </button>
                 </div>
-              )}
-              {groupedMonths.map(([monthKey, monthRecords]) => (
-                <div
-                  key={monthKey}
-                  onClick={() => setSelectedMonth(monthKey)}
-                  className="cursor-pointer p-5 border rounded-lg bg-card hover:bg-muted/50 hover:border-primary/50 transition-all flex items-center gap-4 group shadow-sm"
-                >
-                  <div className="p-3 bg-blue-500/10 rounded-lg group-hover:bg-blue-500/20 transition-colors">
-                    <Folder className="w-8 h-8 text-blue-500 fill-blue-500/20" />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-foreground">
-                      {format(new Date(monthKey + '-01'), 'MMMM yyyy')}
-                    </h3>
-                    <p className="text-xs text-muted-foreground mt-0.5">{monthRecords.length} Items</p>
-                  </div>
-                </div>
-              ))}
+              </div>
             </div>
           ) : (
           <div className="bg-card border rounded-lg shadow-sm overflow-hidden flex flex-col animate-in fade-in slide-in-from-bottom-2 duration-200">
             <div className="p-4 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-muted/20">
               <div className="flex items-center gap-3 w-full sm:w-auto">
                 <button 
-                  onClick={() => setSelectedMonth(null)}
+                  onClick={() => setSelectedPeriodId(null)}
                   className="p-2 hover:bg-background rounded-md border text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                  title="Kembali ke Folder"
+                  title="Kembali ke daftar periode"
                 >
                   <ArrowLeft className="w-4 h-4" />
                 </button>
                 <div className="relative w-full sm:w-64">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
-                  <input type="text" placeholder={selectedMonth === 'ALL' ? 'Cari di semua data...' : `Cari di ${format(new Date(selectedMonth + '-01'), 'MMM yyyy')}...`} className="w-full pl-9 pr-4 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                  <input type="text" placeholder={`Cari di ${selectedPeriod?.label ?? ''}...`} className="w-full pl-9 pr-4 py-2 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                 </div>
                 <div className="flex items-center gap-1 bg-background border rounded-md p-0.5 text-xs text-muted-foreground">
                   <button onClick={expandAll} className="px-2 py-1 hover:bg-muted hover:text-foreground rounded flex items-center gap-1 transition-colors" title="Buka Semua Detail">

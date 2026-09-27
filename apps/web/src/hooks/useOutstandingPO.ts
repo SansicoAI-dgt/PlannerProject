@@ -1,8 +1,10 @@
 ﻿import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchApi } from '../lib/api';
+import { PERIOD_QUERY_KEY } from './usePeriods';
 
 export interface OutstandingPOData {
   id: string;
+  periodId: string;
   planReceivedDate: string;
   supplierName: string;
   itemDesc: string;
@@ -14,11 +16,18 @@ export interface OutstandingPOData {
   updatedAt: string;
 }
 
-export function useOutstandingPO() {
+/**
+ * Data Outstanding PO untuk SATU periode. `periodId` wajib — tanpa itu permintaan
+ * tidak dijalankan supaya data antar periode tidak pernah tercampur.
+ */
+export function useOutstandingPO(periodId?: string | null) {
   return useQuery({
-    queryKey: ['outstanding-po'],
+    queryKey: ['outstanding-po', periodId],
+    enabled: Boolean(periodId),
     queryFn: async () => {
-      const response = await fetchApi<{ data: OutstandingPOData[] }>('/outstanding-po');
+      const response = await fetchApi<{ data: OutstandingPOData[] }>(
+        `/outstanding-po?periodId=${encodeURIComponent(periodId as string)}`,
+      );
       return response.data;
     },
   });
@@ -45,15 +54,16 @@ export function useImportOutstandingPO() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ data, mode }: { data: any[]; mode: 'add' | 'overwrite' }) => {
+    mutationFn: async ({ data, mode, periodId }: { data: any[]; mode: 'add' | 'overwrite'; periodId: string }) => {
       const response = await fetchApi<{ message: string }>('/outstanding-po/import', { 
         method: 'POST',
-        body: JSON.stringify({ data, mode }),
+        body: JSON.stringify({ data, mode, periodId }),
       });
       return response;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['outstanding-po'] });
+      queryClient.invalidateQueries({ queryKey: PERIOD_QUERY_KEY });
     },
   });
 }
@@ -62,7 +72,7 @@ export function useAddManualOutstandingPO() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: Omit<OutstandingPOData, 'id' | 'createdAt' | 'updatedAt'>) => {
+    mutationFn: async (data: Omit<OutstandingPOData, 'id' | 'periodId' | 'createdAt' | 'updatedAt'> & { periodId: string }) => {
       const response = await fetchApi<{ data: OutstandingPOData }>('/outstanding-po', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -71,6 +81,7 @@ export function useAddManualOutstandingPO() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['outstanding-po'] });
+      queryClient.invalidateQueries({ queryKey: PERIOD_QUERY_KEY });
     },
   });
 }

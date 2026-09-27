@@ -1,12 +1,15 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
 import { authenticate } from '../middleware/auth';
+import { resolveUploadPeriod, recordPeriodChange, touchPeriod } from '../lib/periodScope';
 import * as xlsx from 'xlsx';
 
 export default async function outstandingPoRoutes(server: FastifyInstance) {
-  // Get all outstanding POs
+  // Get all outstanding POs. Bisa difilter per periode: ?periodId=...
   server.get('/api/v1/outstanding-po', { preValidation: [authenticate] }, async (request, reply) => {
+    const { periodId } = request.query as { periodId?: string };
     const data = await prisma.outstandingPO.findMany({
+      where: periodId ? { periodId } : undefined,
       orderBy: { planReceivedDate: 'desc' },
     });
     return reply.send({ data });
@@ -133,34 +136,75 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
     }
   });
 
-  // Import (Save) with Add or Overwrite mode
+  // Import (Save) dengan mode Add atau Overwrite — WAJIB menyertakan periode.
   server.post('/api/v1/outstanding-po/import', { preValidation: [authenticate] }, async (request, reply) => {
-    const { data, mode } = request.body as { 
-      data: any[];
-      mode: 'add' | 'overwrite';
+    const body = (request.body || {}) as {
+      data?: any[];
+      mode?: 'add' | 'overwrite';
+      periodId?: string;
+      periodMonth?: string;
+      periodLabel?: string;
+      fileName?: string;
     };
+    const data = body.data;
 
     if (!data || !Array.isArray(data) || data.length === 0) {
       return reply.code(400).send({ error: 'Bad Request', message: 'Valid data array is required' });
     }
 
-    try {
-      if (mode === 'overwrite') {
-        await prisma.outstandingPO.deleteMany({});
-      }
+    const resolved = await resolveUploadPeriod(body as Record<string, unknown>, request.user!.id);
+    if (!resolved.ok) {
+      return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
+    }
+    const { periodId } = resolved;
+    const mode: 'add' | 'overwrite' = body.mode === 'add' ? 'add' : 'overwrite';
 
-      const recordsToInsert = data.map((record) => ({
-        ...record,
-        planReceivedDate: new Date(record.planReceivedDate),
-      }));
-      
-      await prisma.outstandingPO.createMany({
-        data: recordsToInsert,
+    try {
+      const previousCount = await prisma.outstandingPO.count({ where: { periodId } });
+
+      await prisma.$transaction(
+        async (tx) => {
+          if (mode === 'overwrite') {
+            // HANYA periode ini yang dikosongkan.
+            await tx.outstandingPO.deleteMany({ where: { periodId } });
+          }
+          const recordsToInsert = data.map((record) => ({
+            periodId,
+            planReceivedDate: new Date(record.planReceivedDate),
+            supplierName: record.supplierName,
+            itemDesc: record.itemDesc,
+            qtyOrder: Number(record.qtyOrder) || 0,
+            qtyOrderUnit: record.qtyOrderUnit,
+            qtyDelivered: Number(record.qtyDelivered) || 0,
+            qtyDeliveredUnit: record.qtyDeliveredUnit,
+          }));
+          for (let i = 0; i < recordsToInsert.length; i += 1000) {
+            await tx.outstandingPO.createMany({ data: recordsToInsert.slice(i, i + 1000) });
+          }
+        },
+        { timeout: 180000, maxWait: 30000 },
+      );
+
+      await recordPeriodChange({
+        periodId,
+        userId: request.user!.id,
+        sourceType: 'OUTSTANDING_PO',
+        rowCount: data.length,
+        replaced: previousCount,
+        fileName: body.fileName ?? null,
+        mode,
       });
 
       return reply.code(201).send({
-        message: `Successfully ${mode === 'overwrite' ? 'overwritten with' : 'added'} ${recordsToInsert.length} records.`,
-        count: recordsToInsert.length,
+        message:
+          mode === 'overwrite'
+            ? `Periode "${resolved.label}" ditimpa dengan ${data.length} baris PO.`
+            : `Ditambahkan ${data.length} baris PO ke periode "${resolved.label}".`,
+        count: data.length,
+        periodId,
+        label: resolved.label,
+        replaced: previousCount,
+        created: resolved.created,
       });
     } catch (error) {
       server.log.error(error);
@@ -168,16 +212,23 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
     }
   });
 
-  // Add Manual
+  // Add Manual — WAJIB menyertakan periode.
   server.post('/api/v1/outstanding-po', { preValidation: [authenticate] }, async (request, reply) => {
-    const { planReceivedDate, supplierName, itemDesc, qtyOrder, qtyOrderUnit, qtyDelivered, qtyDeliveredUnit } = request.body as any;
+    const body = (request.body || {}) as any;
+    const { planReceivedDate, supplierName, itemDesc, qtyOrder, qtyOrderUnit, qtyDelivered, qtyDeliveredUnit } = body;
 
     if (!planReceivedDate || !supplierName || !itemDesc || qtyOrder === undefined || qtyDelivered === undefined) {
       return reply.code(400).send({ error: 'Bad Request', message: 'Required fields are missing' });
     }
 
+    const resolved = await resolveUploadPeriod(body, request.user!.id);
+    if (!resolved.ok) {
+      return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
+    }
+
     const result = await prisma.outstandingPO.create({
       data: {
+        periodId: resolved.periodId,
         planReceivedDate: new Date(planReceivedDate),
         supplierName,
         itemDesc,
@@ -188,6 +239,7 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
       },
     });
 
+    await touchPeriod(resolved.periodId);
     return reply.code(201).send({ data: result });
   });
 
@@ -214,6 +266,7 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
       },
     });
 
+    await touchPeriod(existing.periodId);
     return reply.send({ data: updated });
   });
 
@@ -228,6 +281,7 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
 
     await prisma.outstandingPO.delete({ where: { id } });
 
+    await touchPeriod(existing.periodId);
     return reply.send({ message: 'Record deleted successfully' });
   });
 
@@ -240,9 +294,15 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
     }
 
     try {
+      const affected = await prisma.outstandingPO.findMany({
+        where: { id: { in: ids } },
+        select: { periodId: true },
+      });
       const result = await prisma.outstandingPO.deleteMany({
         where: { id: { in: ids } },
       });
+
+      for (const pid of [...new Set(affected.map((r) => r.periodId))]) await touchPeriod(pid);
 
       return reply.send({ message: `Successfully deleted ${result.count} records.`, count: result.count });
     } catch (error) {

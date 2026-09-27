@@ -2,12 +2,15 @@
 import prisma from '../lib/prisma';
 import { config } from '../config';
 import { authenticate } from '../middleware/auth';
+import { resolveUploadPeriod, recordPeriodChange, touchPeriod } from '../lib/periodScope';
 import * as xlsx from 'xlsx';
 
 export default async function stockRawMaterialRoutes(server: FastifyInstance) {
-  // Get all stock raw materials
+  // Get all stock raw materials. Bisa difilter per periode: ?periodId=...
   server.get('/api/v1/stock-raw-material', { preValidation: [authenticate] }, async (request, reply) => {
+    const { periodId } = request.query as { periodId?: string };
     const data = await prisma.stockRawMaterial.findMany({
+      where: periodId ? { periodId } : undefined,
       orderBy: { date: 'desc' },
     });
     return reply.send({ data });
@@ -20,8 +23,18 @@ export default async function stockRawMaterialRoutes(server: FastifyInstance) {
    * user mengira jumlahnya sedikit. Endpoint ini memperlihatkan total sebenarnya
    * sekaligus berapa lot yang menyusunnya (rancangan §8.6).
    */
-  server.get('/api/v1/stock-raw-material/summary', { preValidation: [authenticate] }, async (_request, reply) => {
+  server.get('/api/v1/stock-raw-material/summary', { preValidation: [authenticate] }, async (request, reply) => {
+    // Ringkasan WAJIB per periode — tanpa ini stok beberapa bulan akan tercampur.
+    const { periodId } = request.query as { periodId?: string };
+    if (!periodId) {
+      return reply.code(400).send({
+        error: 'Bad Request',
+        message: 'Parameter periodId wajib diisi. Pilih periode dulu.',
+      });
+    }
+
     const stocks = await prisma.stockRawMaterial.findMany({
+      where: { periodId },
       select: { itemDesc: true, supplier: true, qty: true, unit: true, date: true },
     });
 
@@ -105,9 +118,19 @@ export default async function stockRawMaterialRoutes(server: FastifyInstance) {
 
   /** Detail per lot untuk satu itemDesc + supplier. */
   server.get('/api/v1/stock-raw-material/lots', { preValidation: [authenticate] }, async (request, reply) => {
-    const { itemDesc, supplier } = request.query as { itemDesc?: string; supplier?: string };
+    const { itemDesc, supplier, periodId } = request.query as {
+      itemDesc?: string;
+      supplier?: string;
+      periodId?: string;
+    };
     if (!itemDesc) {
       return reply.code(400).send({ error: 'Bad Request', message: 'itemDesc wajib diisi' });
+    }
+    if (!periodId) {
+      return reply.code(400).send({
+        error: 'Bad Request',
+        message: 'Parameter periodId wajib diisi. Pilih periode dulu.',
+      });
     }
 
     // `supplier` kosong harus cocok dengan baris NULL **maupun** string kosong,
@@ -121,7 +144,7 @@ export default async function stockRawMaterialRoutes(server: FastifyInstance) {
           : { supplier };
 
     const data = await prisma.stockRawMaterial.findMany({
-      where: { itemDesc, ...supplierFilter },
+      where: { periodId, itemDesc, ...supplierFilter },
       orderBy: { date: 'desc' },
     });
 
@@ -263,68 +286,107 @@ export default async function stockRawMaterialRoutes(server: FastifyInstance) {
     }
   });
 
-  // Import (Save) with Add or Overwrite mode
+  // Import (Save) dengan mode Add atau Overwrite — WAJIB menyertakan periode.
   server.post('/api/v1/stock-raw-material/import', { preValidation: [authenticate] }, async (request, reply) => {
-    const { data, mode } = request.body as { 
-      data: { itemDesc: string; supplier: string; qty: number; unit: string; date: string | Date }[];
-      mode: 'add' | 'overwrite';
+    const body = (request.body || {}) as {
+      data?: { itemDesc: string; supplier: string; qty: number; unit: string; date: string | Date }[];
+      mode?: 'add' | 'overwrite';
+      periodId?: string;
+      periodMonth?: string;
+      periodLabel?: string;
+      fileName?: string;
     };
+    const data = body.data;
 
     if (!data || !Array.isArray(data) || data.length === 0) {
       return reply.code(400).send({ error: 'Bad Request', message: 'Valid data array is required' });
     }
 
+    const resolved = await resolveUploadPeriod(body as Record<string, unknown>, request.user!.id);
+    if (!resolved.ok) {
+      return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
+    }
+    const { periodId } = resolved;
+    const mode: 'add' | 'overwrite' = body.mode === 'add' ? 'add' : 'overwrite';
+
     try {
-      if (mode === 'overwrite') {
-        await prisma.stockRawMaterial.deleteMany({});
-        const recordsToInsert = data.map((record) => ({
-          ...record,
-          date: new Date(record.date),
-        }));
-        await prisma.stockRawMaterial.createMany({
-          data: recordsToInsert,
-        });
-        return reply.code(201).send({
-          message: `Successfully overwritten with ${recordsToInsert.length} records.`,
-          count: recordsToInsert.length,
-        });
-      } else {
-        const recordsToInsert = data.map((record) => ({
-          ...record,
-          date: new Date(record.date),
-        }));
-        await prisma.stockRawMaterial.createMany({
-          data: recordsToInsert,
-        });
-        return reply.code(201).send({
-          message: `Successfully added ${recordsToInsert.length} records.`,
-          count: recordsToInsert.length,
-        });
-      }
+      const previousCount = await prisma.stockRawMaterial.count({ where: { periodId } });
+
+      const recordsToInsert = data.map((record) => ({
+        periodId,
+        itemDesc: record.itemDesc,
+        supplier: record.supplier || null,
+        qty: Number(record.qty) || 0,
+        unit: record.unit,
+        date: new Date(record.date),
+      }));
+
+      await prisma.$transaction(
+        async (tx) => {
+          if (mode === 'overwrite') {
+            // HANYA periode ini yang dikosongkan.
+            await tx.stockRawMaterial.deleteMany({ where: { periodId } });
+          }
+          for (let i = 0; i < recordsToInsert.length; i += 1000) {
+            await tx.stockRawMaterial.createMany({ data: recordsToInsert.slice(i, i + 1000) });
+          }
+        },
+        { timeout: 180000, maxWait: 30000 },
+      );
+
+      await recordPeriodChange({
+        periodId,
+        userId: request.user!.id,
+        sourceType: 'STOCK_RM',
+        rowCount: recordsToInsert.length,
+        replaced: previousCount,
+        fileName: body.fileName ?? null,
+        mode,
+      });
+
+      return reply.code(201).send({
+        message:
+          mode === 'overwrite'
+            ? `Periode "${resolved.label}" ditimpa dengan ${recordsToInsert.length} baris stok.`
+            : `Ditambahkan ${recordsToInsert.length} baris stok ke periode "${resolved.label}".`,
+        count: recordsToInsert.length,
+        periodId,
+        label: resolved.label,
+        replaced: previousCount,
+        created: resolved.created,
+      });
     } catch (error) {
       server.log.error(error);
       return reply.code(500).send({ error: 'Internal Server Error', message: 'Failed to import data' });
     }
   });
 
-  // Add Manual
+  // Add Manual — WAJIB menyertakan periode.
   server.post('/api/v1/stock-raw-material', { preValidation: [authenticate] }, async (request, reply) => {
-    const { itemDesc, supplier, unit, qty, date } = request.body as any;
+    const body = (request.body || {}) as any;
+    const { itemDesc, supplier, unit, qty, date } = body;
 
     if (!itemDesc || !unit || qty === undefined || !date) {
       return reply.code(400).send({ error: 'Bad Request', message: 'Required fields are missing' });
     }
 
+    const resolved = await resolveUploadPeriod(body, request.user!.id);
+    if (!resolved.ok) {
+      return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
+    }
+
     const result = await prisma.stockRawMaterial.create({
       data: {
+        periodId: resolved.periodId,
         itemDesc,
-        supplier,
+        supplier: supplier || null,
         unit,
         qty: parseFloat(qty),
         date: new Date(date),
       },
     });
 
+    await touchPeriod(resolved.periodId);
     return reply.code(201).send({ data: result });
   });
 
@@ -349,6 +411,7 @@ export default async function stockRawMaterialRoutes(server: FastifyInstance) {
       },
     });
 
+    await touchPeriod(existing.periodId);
     return reply.send({ data: updated });
   });
 
@@ -363,6 +426,7 @@ export default async function stockRawMaterialRoutes(server: FastifyInstance) {
 
     await prisma.stockRawMaterial.delete({ where: { id } });
 
+    await touchPeriod(existing.periodId);
     return reply.send({ message: 'Record deleted successfully' });
   });
 
@@ -375,9 +439,15 @@ export default async function stockRawMaterialRoutes(server: FastifyInstance) {
     }
 
     try {
+      const affected = await prisma.stockRawMaterial.findMany({
+        where: { id: { in: ids } },
+        select: { periodId: true },
+      });
       const result = await prisma.stockRawMaterial.deleteMany({
         where: { id: { in: ids } },
       });
+
+      for (const pid of [...new Set(affected.map((r) => r.periodId))]) await touchPeriod(pid);
 
       return reply.send({ message: `Successfully deleted ${result.count} records.`, count: result.count });
     } catch (error) {

@@ -362,19 +362,61 @@ export function useCycleSources(cycleId: string | null) {
   });
 }
 
-/** Salin data dari Master Data ke periode ini (tanpa upload ulang Excel). */
-export function useImportLiveIntoCycle() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (data: { cycleId: string; sources?: string[]; source?: string }) =>
-      fetchApi(`/material-planning/cycles/${data.cycleId}/import-live`, {
-        method: 'POST',
-        body: JSON.stringify({ sources: data.sources, source: data.source }),
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['material-planning-cycles'] });
-      queryClient.invalidateQueries({ queryKey: ['material-planning-sources'] });
-    },
+/**
+ * CATATAN (2026-09-28): `useImportLiveIntoCycle` DIHAPUS bersama endpoint
+ * `/material-planning/cycles/:id/import-live`. Data periode sekarang diupload
+ * langsung dari halaman Master Data (lihat `usePeriods.ts`).
+ */
+
+// ============================================================
+// FOLDER PERIODE: validitas hasil + isi data master per periode
+// ============================================================
+
+export interface CycleDataStatus {
+  hasResult: boolean;
+  runNumber: number | null;
+  calculatedAt: string | null;
+  /** false = perhitungan lama belum punya checksum, validasi pakai cap waktu */
+  signatureComparable: boolean;
+  /** sumber yang datanya berubah setelah perhitungan (MRP/WIP/HOTLIST/STOCK_RM/OUTSTANDING_PO) */
+  changedSources: string[];
+  isValid: boolean;
+  isInvalid: boolean;
+  invalidReason: string | null;
+}
+
+/** Status validitas hasil perhitungan periode ini terhadap data master SEKARANG. */
+export function useCycleDataStatus(cycleId: string | null) {
+  return useQuery<{ data: CycleDataStatus }, Error>({
+    queryKey: ['material-planning-data-status', cycleId],
+    enabled: Boolean(cycleId),
+    queryFn: () => fetchApi(`/material-planning/cycles/${cycleId}/data-status`),
+    staleTime: 10 * 1000,
+  });
+}
+
+/**
+ * Endpoint Master Data yang sudah mendukung `?periodId=`. Dipakai untuk membuka
+ * folder MRP / WIP / HOT LIST / STOCK RM / OS PO di halaman Material Calculation
+ * — jadi tidak ada data yang diduplikasi.
+ */
+export const PERIOD_SOURCE_ENDPOINT: Record<string, string> = {
+  MRP: '/weekly-schedule',
+  WIP: '/wip',
+  HOTLIST: '/hotlist',
+  STOCK_RM: '/stock-raw-material',
+  OUTSTANDING_PO: '/outstanding-po',
+};
+
+export function usePeriodSourceRows(cycleId: string | null, source: string | null) {
+  return useQuery<{ data: any[] }, Error>({
+    queryKey: ['material-planning-source-rows', cycleId, source],
+    enabled: Boolean(cycleId && source && PERIOD_SOURCE_ENDPOINT[source]),
+    queryFn: () =>
+      fetchApi(
+        `${PERIOD_SOURCE_ENDPOINT[source as string]}?periodId=${encodeURIComponent(cycleId as string)}`,
+      ),
+    staleTime: 30 * 1000,
   });
 }
 
