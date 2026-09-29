@@ -221,6 +221,12 @@ export interface WeeklyMatrixSummary {
   stockAsOfSheet: number;
   outstandingPo: number[];
   outstandingPoSheet: number[];
+  /**
+   * Nomor PO per minggu (sejajar dengan `outstandingPo`). Satu minggu bisa
+   * berisi beberapa nomor PO karena satu PO boleh mencakup beberapa item.
+   * Ditampilkan di UI sebagai caption kecil di bawah angka kg.
+   */
+  outstandingPoNumbers: string[][];
   endInd: number[];
   endIndSheet: number[];
 }
@@ -246,6 +252,8 @@ export interface PoolItem {
   kgRemaining: number;
   /** porsi bersatuan lembar (dikonversi ke kg memakai `fm` part saat dipakai). */
   sheetRemaining: number;
+  /** Nomor PO (hanya untuk `source === 'po'`). Tidak unik antar baris. */
+  poNumber?: string | null;
 }
 
 /** Satu kebutuhan part pada satu minggu. */
@@ -497,6 +505,8 @@ export interface MaterialCalcSource {
     qtyOrderUnit: string;
     qtyDelivered: number;
     planReceivedDate?: Date | null;
+    /** Nomor PO dari kolom `PO NO`. Wajib diisi di Master Data, boleh berulang. */
+    poNumber?: string | null;
   }>;
   wips: Array<{ partNumber: string; location: string; quantity: number }>;
   npofs: Array<{
@@ -745,6 +755,7 @@ export function runMaterialCalculation(
       availableWeek: weekIndexOfDate(po.planReceivedDate),
       kgRemaining: kgQty,
       sheetRemaining: sheetQty,
+      poNumber: po.poNumber ?? null,
     });
   }
 
@@ -1023,12 +1034,19 @@ export function runMaterialCalculation(
     const groupWidth = parseDims(g.ukuran)[0] ?? null;
     const outstandingPo = new Array(weekCount).fill(0) as number[];
     const outstandingPoSheet = new Array(weekCount).fill(0) as number[];
+    // Nomor PO tiap minggu, sejajar dengan `outstandingPo`. Satu nomor PO bisa
+    // muncul beberapa kali di kolam (satu PO boleh mencakup beberapa item),
+    // jadi di-dedupe per minggu. Hanya PO yang masih bersisa yang dicatat.
+    const outstandingPoNumbers: string[][] = Array.from({ length: weekCount }, () => []);
     for (const item of pool) {
       if (item.source !== 'po') continue;
       if (matchSize(item.desc, gsm, groupWidth, options.toleranceCm) === null) continue;
+      if (item.kgRemaining <= 1e-9 && item.sheetRemaining <= 1e-9) continue;
       const wi = Math.min(weekCount - 1, Math.max(0, item.availableWeek));
       outstandingPo[wi] += item.kgRemaining;
       outstandingPoSheet[wi] += item.sheetRemaining;
+      const no = String(item.poNumber || '').trim();
+      if (no && !outstandingPoNumbers[wi].includes(no)) outstandingPoNumbers[wi].push(no);
     }
 
     // End Ind = saldo berjalan minggu demi minggu.
@@ -1061,6 +1079,7 @@ export function runMaterialCalculation(
         stockAsOfSheet,
         outstandingPo,
         outstandingPoSheet,
+        outstandingPoNumbers,
         endInd,
         endIndSheet,
       },

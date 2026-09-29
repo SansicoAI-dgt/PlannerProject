@@ -5,6 +5,8 @@ import { PERIOD_QUERY_KEY } from './usePeriods';
 export interface OutstandingPOData {
   id: string;
   periodId: string;
+  /** Nomor PO dari kolom `PO NO`. Wajib diisi, tidak unik (satu PO boleh banyak item). */
+  poNumber: string;
   planReceivedDate: string;
   supplierName: string;
   itemDesc: string;
@@ -14,6 +16,21 @@ export interface OutstandingPOData {
   qtyDeliveredUnit: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Satu baris Excel yang gagal diimpor (mis. kolom `PO NO` kosong). */
+export interface OutstandingPOImportError {
+  /** Nomor baris di file Excel (1-based, termasuk baris judul). */
+  row: number;
+  poNumber?: string;
+  message: string;
+}
+
+export interface OutstandingPOUploadResult {
+  message: string;
+  data: Omit<OutstandingPOData, 'id' | 'periodId' | 'createdAt' | 'updatedAt'>[];
+  errors: OutstandingPOImportError[];
+  summary: { total: number; valid: number; failed: number };
 }
 
 /**
@@ -38,7 +55,7 @@ export function useUploadOutstandingPO() {
     mutationFn: async (file: File) => {
       const formData = new FormData();
       formData.append('file', file);
-      const response = await fetchApi<{ message: string; data: Omit<OutstandingPOData, 'id' | 'createdAt' | 'updatedAt'>[] }>(
+      const response = await fetchApi<OutstandingPOUploadResult>(
         '/outstanding-po/upload',
         {
           method: 'POST',

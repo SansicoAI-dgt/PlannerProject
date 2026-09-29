@@ -523,6 +523,7 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
         qtyOrderUnit: p.qtyOrderUnit,
         qtyDelivered: p.qtyDelivered,
         planReceivedDate: p.planReceivedDate,
+        poNumber: p.poNumber,
       })),
       wips: wips.map((w) => ({ partNumber: w.item.partNumber, location: w.location, quantity: w.quantity })),
       npofs,

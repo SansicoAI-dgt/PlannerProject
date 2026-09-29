@@ -59,6 +59,11 @@ export interface WeeklyMatrixSummary {
   stockAsOfSheet: number;
   outstandingPo: number[];
   outstandingPoSheet: number[];
+  /**
+   * Nomor PO per minggu (sejajar dengan `outstandingPo`). Satu minggu bisa
+   * berisi beberapa nomor PO. Ditampilkan kecil di bawah angka kg.
+   */
+  outstandingPoNumbers: string[][];
   endInd: number[];
   endIndSheet: number[];
 }

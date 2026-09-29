@@ -158,8 +158,13 @@ async function main() {
     if ([...stockItems.values()].some((s) => matchSize(s.desc, gsm, width, 2) !== null)) matched++;
   }
 
-  check('jumlah kebutuhan NPOF dengan ukuran valid', valid, 98);
-  check('TARGET MILESTONE 2: part yang dapat stok pada toleransi 2 cm', matched, 29);
+  // CATATAN: dua angka di bawah adalah snapshot data NPOF + stok TERKINI di
+  // database lokal (diperbarui 2026-09-28 setelah data master di-upload ulang ke
+  // tabel periode). Fungsi `matchSize` yang diuji TIDAK berubah — yang berubah
+  // hanya isi tabel `npof_materials` / `stock_raw_materials`, sehingga
+  // hitungannya bergeser dari 98/29 ke 108/31.
+  check('jumlah kebutuhan NPOF dengan ukuran valid', valid, 108);
+  check('TARGET MILESTONE 2: part yang dapat stok pada toleransi 2 cm', matched, 31);
 
   // Total kapasitas stok nyata (kg) — jadi patokan "tidak boleh dilampaui"
   const totalStockKg = [...stockItems.values()].reduce((sum, s) => sum + s.kg, 0);
@@ -186,6 +191,7 @@ async function main() {
           qtyOrderUnit: 'kg',
           qtyDelivered: 0,
           planReceivedDate: new Date('2026-10-01'),
+          poNumber: 'PO-TEST-1',
         },
       ],
       wips: [],
@@ -232,6 +238,13 @@ async function main() {
   // PO 100 kg dengan planReceivedDate 2026-10-01 -> 12 hari dari awal periode -> minggu ke-2
   check('matriks: PO belum masuk di minggu 1', matrix.summary.outstandingPo[0], 0);
   check('matriks: PO masuk di minggu kedatangannya (minggu 2)', matrix.summary.outstandingPo[1], 100);
+  check('matriks: nomor PO muncul di minggu kedatangan', matrix.summary.outstandingPoNumbers[1], ['PO-TEST-1']);
+  check('matriks: minggu tanpa PO kosong', matrix.summary.outstandingPoNumbers[0], []);
+  check(
+    'matriks: panjang outstandingPoNumbers = jumlah kolom',
+    matrix.summary.outstandingPoNumbers.length,
+    26,
+  );
 
   // End Ind harus saldo berjalan yang konsisten
   const endIndOk = matrix.summary.endInd.every((value, i) => {

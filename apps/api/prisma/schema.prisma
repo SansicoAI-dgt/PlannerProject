@@ -330,6 +330,9 @@ model StockRawMaterial {
 model OutstandingPO {
   id               String   @id @default(cuid())
   periodId         String // periode UPLOAD (bukan tanggal di dalam data)
+  // Nomor PO dari kolom `PO NO` file Excel. WAJIB diisi (mandatory).
+  // TIDAK unik: satu nomor PO boleh dipakai beberapa baris/item.
+  poNumber         String
   planReceivedDate DateTime @db.Date
   supplierName     String
   itemDesc         String
@@ -345,6 +348,7 @@ model OutstandingPO {
   @@index([periodId])
   @@index([planReceivedDate])
   @@index([periodId, itemDesc, supplierName])
+  @@index([periodId, poNumber])
   @@map("outstanding_pos")
 }
 

@@ -7,6 +7,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "verify:material-calc": "tsx verify-material-calc.ts",
+    "verify:po-number": "tsx verify-po-number.ts",
     "verify:cycle-isolation": "tsx verify-cycle-isolation.ts",
     "test": "vitest",
     "prisma": "prisma",

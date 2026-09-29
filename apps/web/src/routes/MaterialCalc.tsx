@@ -87,7 +87,7 @@ function getFallbackTimeline(leadTimeMonths: number) {
 
 // ── Sel tabel mingguan: baris atas lembar, baris bawah kg ─────────────────
 
-function UnitCell({ sheet, kg, hasKg }: { sheet: number | undefined; kg: number | undefined; hasKg: boolean }) {
+function UnitCell({ sheet, kg, hasKg, poNumbers }: { sheet: number | undefined; kg: number | undefined; hasKg: boolean; poNumbers?: string[] }) {
   const sheets = sheet ?? 0;
   const kilos = kg ?? 0;
   const negative = sheets < 0 || kilos < 0;
@@ -95,6 +95,18 @@ function UnitCell({ sheet, kg, hasKg }: { sheet: number | undefined; kg: number 
     <td className={`px-2 py-1.5 text-right align-top tabular-nums ${negative ? 'text-red-600' : 'text-gray-700'}`}>
       <div className="text-[11px] font-medium">{formatNum(sheets, 0)} lbr</div>
       <div className="text-[10px] text-gray-400">{hasKg ? `${formatNum(kilos)} kg` : '—'}</div>
+      {poNumbers && poNumbers.length > 0 && (
+        <div
+          className="mt-0.5 flex flex-wrap justify-end gap-x-1 text-[9px] leading-tight text-indigo-400"
+          title={`PO: ${poNumbers.join(', ')}`}
+        >
+          {poNumbers.map((no, idx) => (
+            <span key={no} className="font-mono">
+              {no}{idx < poNumbers.length - 1 ? ',' : ''}
+            </span>
+          ))}
+        </div>
+      )}
     </td>
   );
 }
@@ -179,7 +191,13 @@ function WeeklyMatrixTable({ matrix }: { matrix: WeeklyMatrix }) {
               Outstanding PO
             </td>
             {Array.from({ length: width }).map((_, i) => (
-              <UnitCell key={i} sheet={summary.outstandingPoSheet[i]} kg={summary.outstandingPo[i]} hasKg />
+              <UnitCell
+                key={i}
+                sheet={summary.outstandingPoSheet[i]}
+                kg={summary.outstandingPo[i]}
+                hasKg
+                poNumbers={summary.outstandingPoNumbers?.[i]}
+              />
             ))}
           </tr>
 
@@ -523,6 +541,7 @@ const SOURCE_COLUMNS: Record<string, { key: string; label: string; numeric?: boo
     { key: 'date', label: 'Tanggal' },
   ],
   OUTSTANDING_PO: [
+    { key: 'poNumber', label: 'PO Number' },
     { key: 'planReceivedDate', label: 'Tgl Rencana' },
     { key: 'supplierName', label: 'Supplier' },
     { key: 'itemDesc', label: 'Item' },

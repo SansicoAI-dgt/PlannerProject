@@ -21,15 +21,25 @@ function weekLabel(date: string): string {
   return `${parsed.getMonth() + 1}/${parsed.getDate()}`;
 }
 
-/** Sel minggu: baris atas = sheet (lembar), baris bawah = kg. */
-function unitCell(sheet: number | undefined, kg: number | undefined, hasKg: boolean): string {
+/** Sel minggu: baris atas = sheet (lembar), baris bawah = kg (+ nomor PO kecil). */
+function unitCell(
+  sheet: number | undefined,
+  kg: number | undefined,
+  hasKg: boolean,
+  poNumbers?: string[],
+): string {
   const cls = (value: number) => (value < 0 ? ' class="neg"' : '');
   const sheetValue = sheet ?? 0;
   const kgValue = kg ?? 0;
   const kgLine = hasKg
     ? `<span class="sub${kgValue < 0 ? ' neg' : ''}">${num(kgValue)} kg</span>`
     : '<span class="sub muted">—</span>';
-  return `<td${cls(sheetValue)}>${num(sheetValue, 0)} lbr${kgLine}</td>`;
+  // Nomor PO: caption kecil berwarna sekunder di bawah baris kg.
+  const poLine =
+    poNumbers && poNumbers.length > 0
+      ? `<span class="sub" style="font-size:9px;color:#818cf8">${esc(poNumbers.join(', '))}</span>`
+      : '';
+  return `<td${cls(sheetValue)}>${num(sheetValue, 0)} lbr${kgLine}${poLine}</td>`;
 }
 
 function summaryRow(
@@ -38,10 +48,11 @@ function summaryRow(
   kgValues: number[] | undefined,
   hasKg: boolean,
   width: number,
+  poNumbersPerWeek?: string[][],
 ): string {
   const cells = new Array(Math.max(0, width))
     .fill(0)
-    .map((_, i) => unitCell(sheetValues?.[i], kgValues?.[i], hasKg))
+    .map((_, i) => unitCell(sheetValues?.[i], kgValues?.[i], hasKg, poNumbersPerWeek?.[i]))
     .join('');
   return `<tr><td colspan="7" class="label">${esc(label)}</td>${cells}</tr>`;
 }
@@ -96,7 +107,7 @@ function groupTableHtml(group: NonNullable<MaterialCalcResponse['groups']>[numbe
     summaryRow('Allowance (5%)', summary.allowanceSheet, summary.allowance, hasKg, width),
     summaryRow('Total + Allowance', summary.totalPlusAllowanceSheet, summary.totalPlusAllowance, hasKg, width),
     stockRow(summary.stockAsOfSheet, summary.stockAsOf, hasKg, width),
-    summaryRow('Outstanding PO', summary.outstandingPoSheet, summary.outstandingPo, hasKg, width),
+    summaryRow('Outstanding PO', summary.outstandingPoSheet, summary.outstandingPo, hasKg, width, summary.outstandingPoNumbers),
     summaryRow('End Ind', summary.endIndSheet, summary.endInd, hasKg, width),
   ].join('');
 

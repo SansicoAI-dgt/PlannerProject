@@ -7,12 +7,174 @@ import {
   useDeleteOutstandingPO,
   useBulkDeleteOutstandingPO,
   useImportOutstandingPO,
-  type OutstandingPOData
+  type OutstandingPOData,
+  type OutstandingPOImportError
 } from '../hooks/useOutstandingPO';
-import { FileSpreadsheet, Plus, Upload, Loader2, Search, Pencil, Trash2, X, Check, Save, Folder, ArrowLeft, ChevronDown, ChevronRight, ChevronsDown, ChevronsUp, Lock, CalendarPlus } from 'lucide-react';
+import { FileSpreadsheet, Plus, Upload, Loader2, Search, Pencil, Trash2, X, Check, Save, Folder, ArrowLeft, ChevronDown, ChevronRight, ChevronsDown, ChevronsUp, Lock, CalendarPlus, AlertTriangle } from 'lucide-react';
 import { usePeriods, useCreatePeriod, monthLabel } from '../hooks/usePeriods';
 import { PeriodSelect } from '../components/PeriodSelect';
 import { format } from 'date-fns';
+
+/** Satu baris Outstanding PO sebelum disimpan (hasil parse Excel / edit di preview). */
+type OutstandingPORow = Omit<OutstandingPOData, 'id' | 'periodId' | 'createdAt' | 'updatedAt'>;
+
+/** Bentuk minimal sebuah baris PO, dipakai oleh pengelompokan (record & preview). */
+type PoRowLike = {
+  itemDesc: string;
+  poNumber: string;
+  planReceivedDate: string;
+  supplierName: string;
+  qtyOrder: number;
+  qtyOrderUnit: string;
+  qtyDelivered: number;
+  qtyDeliveredUnit: string;
+};
+
+/** Total per satuan — kg dan rim TIDAK boleh dijumlahkan jadi satu angka. */
+interface UnitTotal {
+  unit: string;
+  qty: number;
+}
+
+/** Grup level-1: satu UKURAN / ITEM DESC, berisi semua PO dengan ukuran itu. */
+interface PoGroup<T> {
+  itemDesc: string;
+  items: T[];
+  /** Nomor PO unik di grup ini (satu PO boleh muncul di beberapa baris). */
+  poNumbers: string[];
+  /** Label tanggal rencana yang unik, mis. "2 Plan Dates". */
+  planDateLabels: string[];
+  supplierNames: string;
+  orderTotals: UnitTotal[];
+  deliveredTotals: UnitTotal[];
+}
+
+const fmtQty = (n: number, decimals = 4) =>
+  n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: decimals });
+
+/** Format tanggal yang tidak melempar error untuk nilai tidak valid. */
+function safeFormatDate(value: string | Date | null | undefined): string {
+  if (!value) return '—';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? String(value) : format(d, 'dd MMM yyyy');
+}
+
+function addUnitTotal(list: UnitTotal[], unit: string, qty: number) {
+  const u = (unit || 'kg').trim().toLowerCase() || 'kg';
+  const value = Number(qty) || 0;
+  const found = list.find((t) => t.unit === u);
+  if (found) found.qty += value;
+  else list.push({ unit: u, qty: value });
+}
+
+/**
+ * Kelompokkan baris Outstanding PO per ITEM DESC (ukuran).
+ *
+ * Aturan penting:
+ *  - SATU BARIS = SATU RECORD ITEM. Tidak ada dedup berdasarkan PO Number.
+ *  - Badge jumlah PO = jumlah NOMOR PO UNIK, bukan jumlah baris.
+ *  - Total qty dihitung PER SATUAN, supaya kg dan rim tidak tercampur.
+ */
+function buildPoGroups<T extends PoRowLike>(rows: T[]): PoGroup<T>[] {
+  const map = new Map<string, PoGroup<T>>();
+
+  for (const r of rows) {
+    const label = (r.itemDesc || '').trim();
+    const key = label.toLowerCase();
+    let g = map.get(key);
+    if (!g) {
+      g = {
+        itemDesc: label,
+        items: [],
+        poNumbers: [],
+        planDateLabels: [],
+        supplierNames: '',
+        orderTotals: [],
+        deliveredTotals: [],
+      };
+      map.set(key, g);
+    }
+    g.items.push(r);
+
+    const no = (r.poNumber || '').trim();
+    if (no && !g.poNumbers.includes(no)) g.poNumbers.push(no);
+
+    const dateLabel = safeFormatDate(r.planReceivedDate);
+    if (dateLabel !== '—' && !g.planDateLabels.includes(dateLabel)) g.planDateLabels.push(dateLabel);
+
+    const sup = (r.supplierName || '').trim();
+    if (sup) {
+      const current = g.supplierNames ? g.supplierNames.split(', ') : [];
+      if (!current.includes(sup)) g.supplierNames = current.length ? `${g.supplierNames}, ${sup}` : sup;
+    }
+
+    addUnitTotal(g.orderTotals, r.qtyOrderUnit, r.qtyOrder);
+    addUnitTotal(g.deliveredTotals, r.qtyDeliveredUnit, r.qtyDelivered);
+  }
+
+  return [...map.values()].sort((a, b) => a.itemDesc.localeCompare(b.itemDesc));
+}
+
+/** Jumlah nomor PO unik dalam sederet baris. */
+function uniquePoCount(rows: Array<{ poNumber: string }>): number {
+  const set = new Set<string>();
+  for (const r of rows) {
+    const no = (r.poNumber || '').trim();
+    if (no) set.add(no);
+  }
+  return set.size;
+}
+
+/** Badge nomor PO di baris grup (maks 3, sisanya jadi "+N lagi"). */
+function PoNumberBadges({ numbers }: { numbers: string[] }) {
+  if (numbers.length === 0) return <span className="text-muted-foreground text-xs">—</span>;
+  const shown = numbers.slice(0, 3);
+  return (
+    <div className="flex flex-wrap gap-1 max-w-[220px]" title={`PO: ${numbers.join(', ')}`}>
+      {shown.map((no) => (
+        <span key={no} className="font-mono text-[11px] bg-primary/10 text-primary px-1.5 py-0.5 rounded whitespace-nowrap">
+          {no}
+        </span>
+      ))}
+      {numbers.length > shown.length && (
+        <span className="text-[11px] font-semibold text-muted-foreground self-center">
+          +{numbers.length - shown.length} lagi
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Total per satuan. Kalau satu ukuran punya unit campuran (kg + rim),
+ * angkanya ditumpuk ke bawah agar TIDAK dijumlahkan lintas satuan.
+ */
+function UnitTotals({
+  totals,
+  unitOnly = false,
+  strong = false,
+}: {
+  totals: UnitTotal[];
+  unitOnly?: boolean;
+  strong?: boolean;
+}) {
+  if (totals.length === 0) return <span className="text-muted-foreground text-xs">—</span>;
+  return (
+    <div className={`flex flex-col gap-0.5 ${unitOnly ? 'items-center' : 'items-end'}`}>
+      {totals.map((t) => (
+        <span key={t.unit}>
+          {unitOnly ? (
+            <span className="bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded text-xs">{t.unit}</span>
+          ) : (
+            <span className={`tabular-nums text-sm ${strong ? 'font-extrabold text-foreground' : 'text-foreground'}`}>
+              {fmtQty(t.qty)}
+            </span>
+          )}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 export function OutstandingPO() {
   // Periode upload = keranjang data. WAJIB dipilih sebelum upload/isi manual.
@@ -49,11 +211,14 @@ export function OutstandingPO() {
   const bulkDeleteMutation = useBulkDeleteOutstandingPO();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [previewData, setPreviewData] = useState<Omit<OutstandingPOData, 'id' | 'createdAt' | 'updatedAt'>[]>([]);
+  const [previewData, setPreviewData] = useState<OutstandingPORow[]>([]);
+  /** Baris Excel yang gagal diimpor (mis. kolom `PO NO` kosong). */
+  const [importErrors, setImportErrors] = useState<OutstandingPOImportError[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [previewSearchTerm, setPreviewSearchTerm] = useState('');
   const [previewEditingIndex, setPreviewEditingIndex] = useState<number | null>(null);
   const [previewEditForm, setPreviewEditForm] = useState({
+    poNumber: '',
     supplierName: '',
     itemDesc: '',
     qtyOrder: '',
@@ -64,6 +229,7 @@ export function OutstandingPO() {
 
   const [isManualOpen, setIsManualOpen] = useState(false);
   const [manualForm, setManualForm] = useState({
+    poNumber: '',
     planReceivedDate: format(new Date(), 'yyyy-MM-dd'),
     supplierName: '',
     itemDesc: '',
@@ -75,6 +241,7 @@ export function OutstandingPO() {
   
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({
+    poNumber: '',
     planReceivedDate: '',
     supplierName: '',
     itemDesc: '',
@@ -86,6 +253,7 @@ export function OutstandingPO() {
 
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedItemDescs, setExpandedItemDescs] = useState<Set<string>>(new Set());
+  const [expandedPreviewDescs, setExpandedPreviewDescs] = useState<Set<string>>(new Set());
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -93,14 +261,18 @@ export function OutstandingPO() {
 
     uploadMutation.mutate(file, {
       onSuccess: (res) => {
+        setImportErrors(res.errors ?? []);
+        setExpandedPreviewDescs(new Set());
         if (res.data && res.data.length > 0) {
           setPreviewData(res.data);
         } else {
-          alert('No valid data found in file.');
+          setPreviewData([]);
+          alert(res.message || 'No valid data found in file.');
         }
         if (fileInputRef.current) fileInputRef.current.value = '';
       },
       onError: (error: any) => {
+        setImportErrors([]);
         alert(`Failed to upload file: ${error.message}`);
         if (fileInputRef.current) fileInputRef.current.value = '';
       }
@@ -111,6 +283,13 @@ export function OutstandingPO() {
     if (previewData.length === 0) return;
     if (!targetPeriodId) {
       alert('Pilih periode dulu sebelum menyimpan data.');
+      return;
+    }
+    const missingPo = previewData.filter((r) => !String(r.poNumber || '').trim());
+    if (missingPo.length > 0) {
+      alert(
+        `${missingPo.length} baris belum punya PO Number. PO Number wajib diisi untuk semua baris.`,
+      );
       return;
     }
 
@@ -129,6 +308,7 @@ export function OutstandingPO() {
       onSuccess: () => {
         alert('Data imported successfully!');
         setPreviewData([]);
+        setImportErrors([]);
         setPreviewSearchTerm('');
         setPreviewEditingIndex(null);
       },
@@ -138,9 +318,10 @@ export function OutstandingPO() {
     });
   };
 
-  const handlePreviewEditClick = (index: number, record: Omit<OutstandingPOData, 'id' | 'createdAt' | 'updatedAt'>) => {
+  const handlePreviewEditClick = (index: number, record: OutstandingPORow) => {
     setPreviewEditingIndex(index);
     setPreviewEditForm({
+      poNumber: record.poNumber || '',
       supplierName: record.supplierName,
       itemDesc: record.itemDesc,
       qtyOrder: record.qtyOrder.toString(),
@@ -151,13 +332,14 @@ export function OutstandingPO() {
   };
 
   const handlePreviewSaveEdit = (index: number) => {
-    if (!previewEditForm.supplierName || !previewEditForm.itemDesc || !previewEditForm.qtyOrder || !previewEditForm.qtyDelivered) {
-      alert('Please fill all required fields');
+    if (!previewEditForm.poNumber.trim() || !previewEditForm.supplierName || !previewEditForm.itemDesc || !previewEditForm.qtyOrder || !previewEditForm.qtyDelivered) {
+      alert('Please fill all required fields (PO Number wajib diisi)');
       return;
     }
     const updatedData = [...previewData];
     updatedData[index] = {
       ...updatedData[index],
+      poNumber: previewEditForm.poNumber.trim(),
       supplierName: previewEditForm.supplierName,
       itemDesc: previewEditForm.itemDesc,
       qtyOrder: parseFloat(previewEditForm.qtyOrder),
@@ -180,8 +362,8 @@ export function OutstandingPO() {
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!manualForm.planReceivedDate || !manualForm.supplierName || !manualForm.itemDesc || !manualForm.qtyOrder || !manualForm.qtyDelivered) {
-      alert('Please fill all required fields');
+    if (!manualForm.poNumber.trim() || !manualForm.planReceivedDate || !manualForm.supplierName || !manualForm.itemDesc || !manualForm.qtyOrder || !manualForm.qtyDelivered) {
+      alert('Please fill all required fields (PO Number wajib diisi)');
       return;
     }
 
@@ -191,6 +373,7 @@ export function OutstandingPO() {
     }
 
     addManualMutation.mutate({
+      poNumber: manualForm.poNumber.trim(),
       planReceivedDate: manualForm.planReceivedDate,
       supplierName: manualForm.supplierName,
       itemDesc: manualForm.itemDesc,
@@ -202,6 +385,7 @@ export function OutstandingPO() {
     }, {
       onSuccess: () => {
         setManualForm({
+          poNumber: '',
           planReceivedDate: format(new Date(), 'yyyy-MM-dd'),
           supplierName: '',
           itemDesc: '',
@@ -221,6 +405,7 @@ export function OutstandingPO() {
   const handleEditClick = (record: OutstandingPOData) => {
     setEditingId(record.id);
     setEditForm({
+      poNumber: record.poNumber || '',
       planReceivedDate: format(new Date(record.planReceivedDate), 'yyyy-MM-dd'),
       supplierName: record.supplierName,
       itemDesc: record.itemDesc,
@@ -232,14 +417,15 @@ export function OutstandingPO() {
   };
 
   const handleSaveEdit = (id: string) => {
-    if (!editForm.planReceivedDate || !editForm.supplierName || !editForm.itemDesc || !editForm.qtyOrder || !editForm.qtyDelivered) {
-      alert('Please fill all required fields');
+    if (!editForm.poNumber.trim() || !editForm.planReceivedDate || !editForm.supplierName || !editForm.itemDesc || !editForm.qtyOrder || !editForm.qtyDelivered) {
+      alert('Please fill all required fields (PO Number wajib diisi)');
       return;
     }
 
     updateMutation.mutate({
       id,
       data: {
+        poNumber: editForm.poNumber.trim(),
         planReceivedDate: editForm.planReceivedDate,
         supplierName: editForm.supplierName,
         itemDesc: editForm.itemDesc,
@@ -282,53 +468,29 @@ export function OutstandingPO() {
     }
   };
 
-  const records = poData || [];
+  const records = useMemo(() => poData ?? [], [poData]);
 
-  const filteredRecords = records.filter(record => 
-    record.itemDesc.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    record.supplierName.toLowerCase().includes(searchTerm.toLowerCase())
+  /** Pencarian mencakup nomor PO, item desc, dan supplier. */
+  const matchSearch = (record: PoRowLike, term: string) => {
+    const q = term.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      (record.itemDesc || '').toLowerCase().includes(q) ||
+      (record.supplierName || '').toLowerCase().includes(q) ||
+      (record.poNumber || '').toLowerCase().includes(q)
+    );
+  };
+
+  const filteredRecords = useMemo(
+    () => records.filter((record) => matchSearch(record, searchTerm)),
+    [records, searchTerm],
   );
 
-  const groupedByItem = useMemo(() => {
-    const groups: Record<string, {
-      itemDesc: string;
-      supplierNames: string;
-      qtyOrderUnit: string;
-      qtyDeliveredUnit: string;
-      totalQtyOrder: number;
-      totalQtyDelivered: number;
-      items: OutstandingPOData[];
-    }> = {};
+  const groupedByItem = useMemo(() => buildPoGroups(filteredRecords), [filteredRecords]);
 
-    filteredRecords.forEach((record) => {
-      const key = record.itemDesc.trim();
-      if (!groups[key]) {
-        groups[key] = {
-          itemDesc: record.itemDesc,
-          supplierNames: record.supplierName || '',
-          qtyOrderUnit: record.qtyOrderUnit || 'kg',
-          qtyDeliveredUnit: record.qtyDeliveredUnit || 'kg',
-          totalQtyOrder: 0,
-          totalQtyDelivered: 0,
-          items: [],
-        };
-      }
-      groups[key].totalQtyOrder += record.qtyOrder;
-      groups[key].totalQtyDelivered += record.qtyDelivered;
-      groups[key].items.push(record);
-
-      if (record.supplierName) {
-        const currentSuppliers = groups[key].supplierNames.split(', ').filter(Boolean);
-        if (!currentSuppliers.includes(record.supplierName)) {
-          groups[key].supplierNames = currentSuppliers.length > 0
-            ? `${groups[key].supplierNames}, ${record.supplierName}`
-            : record.supplierName;
-        }
-      }
-    });
-
-    return Object.values(groups).sort((a, b) => a.itemDesc.localeCompare(b.itemDesc));
-  }, [filteredRecords]);
+  /** Items = jumlah grup ukuran unik, POs = jumlah NOMOR PO unik. */
+  const totalItems = groupedByItem.length;
+  const totalPos = useMemo(() => uniquePoCount(filteredRecords), [filteredRecords]);
 
   const toggleExpand = (itemDesc: string) => {
     setExpandedItemDescs(prev => {
@@ -361,10 +523,25 @@ export function OutstandingPO() {
     }
   };
 
-  const filteredPreviewData = previewData.filter(record => 
-    record.itemDesc.toLowerCase().includes(previewSearchTerm.toLowerCase()) ||
-    record.supplierName.toLowerCase().includes(previewSearchTerm.toLowerCase())
+  // ── Data Preview: pencarian + pengelompokan yang sama dengan list utama ──
+  const filteredPreviewData = useMemo(
+    () => previewData.filter((record) => matchSearch(record, previewSearchTerm)),
+    [previewData, previewSearchTerm],
   );
+  const previewGroups = useMemo(() => buildPoGroups(filteredPreviewData), [filteredPreviewData]);
+  const previewPos = useMemo(() => uniquePoCount(filteredPreviewData), [filteredPreviewData]);
+
+  const togglePreviewExpand = (itemDesc: string) => {
+    setExpandedPreviewDescs(prev => {
+      const next = new Set(prev);
+      if (next.has(itemDesc)) next.delete(itemDesc);
+      else next.add(itemDesc);
+      return next;
+    });
+  };
+
+  const expandAllPreview = () => setExpandedPreviewDescs(new Set(previewGroups.map(g => g.itemDesc)));
+  const collapseAllPreview = () => setExpandedPreviewDescs(new Set());
 
   return (
     <div className="space-y-6">
@@ -405,14 +582,26 @@ export function OutstandingPO() {
               <h2 className="text-lg font-bold text-primary flex items-center gap-2">
                 <FileSpreadsheet className="w-5 h-5" /> Data Preview
               </h2>
-              <p className="text-sm text-muted-foreground mt-1">
-                You are about to import <strong>{previewData.length}</strong> records. Please review the data below and choose how to save.
+              <p className="text-sm text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
+                <span>You are about to import <strong>{previewData.length}</strong> records.</span>
+                <span className="text-xs font-medium bg-background border px-2 py-0.5 rounded">
+                  {previewGroups.length} Items <span className="text-muted-foreground/40">•</span> {previewPos} POs
+                </span>
               </p>
             </div>
             <div className="flex flex-wrap gap-2 items-center">
               <div className="relative w-full sm:w-64 mr-2">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground w-4 h-4" />
-                <input type="text" placeholder="Search preview..." className="w-full pl-9 pr-4 py-1.5 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" value={previewSearchTerm} onChange={(e) => setPreviewSearchTerm(e.target.value)} />
+                <input type="text" placeholder="Cari PO Number / item..." className="w-full pl-9 pr-4 py-1.5 text-sm border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" value={previewSearchTerm} onChange={(e) => setPreviewSearchTerm(e.target.value)} />
+              </div>
+              <div className="flex items-center gap-1 bg-background border rounded-md p-0.5 text-xs text-muted-foreground">
+                <button onClick={expandAllPreview} className="px-2 py-1 hover:bg-muted hover:text-foreground rounded flex items-center gap-1 transition-colors" title="Buka Semua Detail">
+                  <ChevronsDown className="w-3.5 h-3.5" /> Buka
+                </button>
+                <span className="text-muted-foreground/30">|</span>
+                <button onClick={collapseAllPreview} className="px-2 py-1 hover:bg-muted hover:text-foreground rounded flex items-center gap-1 transition-colors" title="Tutup Semua Detail">
+                  <ChevronsUp className="w-3.5 h-3.5" /> Tutup
+                </button>
               </div>
               <button onClick={() => handleSaveImport('add')} disabled={importMutation.isPending || !targetPeriodId} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-md font-medium text-sm disabled:opacity-50">
                 {importMutation.isPending && importMutation.variables?.mode === 'add' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save (Add)
@@ -428,11 +617,34 @@ export function OutstandingPO() {
           <div className="px-5 py-4 border-b bg-amber-50/40 dark:bg-amber-500/5">
             <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="max-w-md" />
           </div>
+          {importErrors.length > 0 && (
+            <div className="mx-5 my-4 border border-destructive/40 bg-destructive/5 rounded-lg overflow-hidden">
+              <div className="px-4 py-3 flex items-center gap-2 border-b border-destructive/20 bg-destructive/10">
+                <AlertTriangle className="w-4 h-4 text-destructive shrink-0" />
+                <p className="text-sm font-semibold text-destructive">
+                  {importErrors.length} baris GAGAL diimpor — baris valid tetap diproses
+                </p>
+              </div>
+              <ul className="max-h-40 overflow-auto divide-y divide-destructive/10 text-xs">
+                {importErrors.map((err, i) => (
+                  <li key={i} className="px-4 py-2 flex items-start gap-2 text-destructive">
+                    <span className="font-mono font-semibold shrink-0">Baris {err.row}</span>
+                    <span>{err.message.replace(/^Baris \d+\s*(\(PO [^)]*\))?\s*:?\s*/, '')}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="px-4 py-2 text-[11px] text-muted-foreground border-t border-destructive/10">
+                Perbaiki kolom <span className="font-semibold">PO NO</span> di file Excel lalu impor ulang,
+                atau tambahkan PO Number langsung pada baris pratinjau di bawah.
+              </p>
+            </div>
+          )}
           <div className="max-h-[60vh] overflow-auto">
             <table className="w-full text-sm text-left">
               <thead className="text-xs text-muted-foreground uppercase bg-secondary/50 sticky top-0 z-10 shadow-sm">
                 <tr>
                   <th className="px-6 py-4 font-semibold">Plan Date</th>
+                  <th className="px-6 py-4 font-semibold">PO Number</th>
                   <th className="px-6 py-4 font-semibold">Supplier</th>
                   <th className="px-6 py-4 font-semibold w-1/4">Item Desc</th>
                   <th className="px-6 py-4 font-semibold text-right">Qty Order</th>
@@ -443,61 +655,125 @@ export function OutstandingPO() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {filteredPreviewData.length === 0 ? (
-                   <tr><td colSpan={8} className="px-6 py-8 text-center text-muted-foreground">No matching data found in preview.</td></tr>
-                ) : filteredPreviewData.map((record) => {
-                  const originalIndex = previewData.indexOf(record);
+                {previewGroups.length === 0 ? (
+                   <tr><td colSpan={9} className="px-6 py-8 text-center text-muted-foreground">No matching data found in preview.</td></tr>
+                ) : previewGroups.map((group) => {
+                  const isExpanded = expandedPreviewDescs.has(group.itemDesc);
                   return (
-                    <tr key={originalIndex} className="hover:bg-muted/30">
-                      <td className="px-6 py-3 font-medium whitespace-nowrap">{format(new Date(record.planReceivedDate), 'dd MMM yyyy')}</td>
-                      {previewEditingIndex === originalIndex ? (
-                        <>
-                          <td className="px-6 py-3"><input type="text" className="w-full h-8 px-2 border rounded text-sm" value={previewEditForm.supplierName} onChange={(e) => setPreviewEditForm({ ...previewEditForm, supplierName: e.target.value })} /></td>
-                          <td className="px-6 py-3"><input type="text" className="w-full h-8 px-2 border rounded text-sm" value={previewEditForm.itemDesc} onChange={(e) => setPreviewEditForm({ ...previewEditForm, itemDesc: e.target.value })} /></td>
-                          <td className="px-6 py-3"><input type="number" step="any" className="w-full h-8 px-2 border rounded text-sm text-right" value={previewEditForm.qtyOrder} onChange={(e) => setPreviewEditForm({ ...previewEditForm, qtyOrder: e.target.value })} /></td>
-                          <td className="px-6 py-3">
-                            <select className="w-full h-8 px-2 border rounded text-sm" value={previewEditForm.qtyOrderUnit} onChange={(e) => setPreviewEditForm({ ...previewEditForm, qtyOrderUnit: e.target.value })}>
-                              <option value="kg">kg</option>
-                              <option value="rim">rim</option>
-                              <option value="sheets">sheets</option>
-                            </select>
-                          </td>
-                          <td className="px-6 py-3"><input type="number" step="any" className="w-full h-8 px-2 border rounded text-sm text-right" value={previewEditForm.qtyDelivered} onChange={(e) => setPreviewEditForm({ ...previewEditForm, qtyDelivered: e.target.value })} /></td>
-                          <td className="px-6 py-3">
-                            <select className="w-full h-8 px-2 border rounded text-sm" value={previewEditForm.qtyDeliveredUnit} onChange={(e) => setPreviewEditForm({ ...previewEditForm, qtyDeliveredUnit: e.target.value })}>
-                              <option value="kg">kg</option>
-                              <option value="rim">rim</option>
-                              <option value="sheets">sheets</option>
-                            </select>
-                          </td>
-                          <td className="px-6 py-3 text-right">
-                            <div className="flex items-center justify-end gap-2">
-                              <button onClick={() => handlePreviewSaveEdit(originalIndex)} className="p-1.5 text-green-600 hover:bg-green-50 rounded">
-                                <Check className="w-4 h-4" />
-                              </button>
-                              <button onClick={() => setPreviewEditingIndex(null)} className="p-1.5 text-muted-foreground hover:bg-muted rounded"><X className="w-4 h-4" /></button>
-                            </div>
-                          </td>
-                        </>
-                      ) : (
-                        <>
-                          <td className="px-6 py-3">{record.supplierName}</td>
-                          <td className="px-6 py-3 font-semibold text-foreground">{record.itemDesc}</td>
-                          <td className="px-6 py-3 text-right font-bold">{record.qtyOrder}</td>
-                          <td className="px-6 py-3 text-center"><span className="bg-primary/10 text-primary px-2 py-0.5 rounded text-xs">{record.qtyOrderUnit}</span></td>
-                          <td className="px-6 py-3 text-right font-bold">{record.qtyDelivered}</td>
-                          <td className="px-6 py-3 text-center"><span className="bg-primary/10 text-primary px-2 py-0.5 rounded text-xs">{record.qtyDeliveredUnit}</span></td>
-                          <td className="px-6 py-3 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <button onClick={() => handlePreviewEditClick(originalIndex, record)} className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded"><Pencil className="w-4 h-4" /></button>
-                              <button onClick={() => handlePreviewDelete(originalIndex)} className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded">
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </>
-                      )}
-                    </tr>
+                    <Fragment key={group.itemDesc}>
+                      {/* Baris grup (level 1): satu ukuran / ITEM DESC */}
+                      <tr className="hover:bg-muted/40 transition-colors bg-card font-medium border-b">
+                        <td className="px-6 py-3.5 text-muted-foreground text-xs font-medium whitespace-nowrap">
+                          {group.planDateLabels.length === 1
+                            ? group.planDateLabels[0]
+                            : `${group.planDateLabels.length} Plan Dates`}
+                        </td>
+                        <td className="px-6 py-3.5"><PoNumberBadges numbers={group.poNumbers} /></td>
+                        <td className="px-6 py-3.5 text-muted-foreground text-xs">{group.supplierNames || '-'}</td>
+                        <td className="px-6 py-3.5">
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => togglePreviewExpand(group.itemDesc)}
+                              className="p-1 hover:bg-muted/80 rounded transition-colors text-muted-foreground hover:text-foreground shrink-0"
+                              title={isExpanded ? 'Tutup Detail' : 'Buka Detail'}
+                            >
+                              {isExpanded ? <ChevronDown className="w-4 h-4 text-primary" /> : <ChevronRight className="w-4 h-4" />}
+                            </button>
+                            <span
+                              className="font-bold text-foreground cursor-pointer hover:text-primary transition-colors"
+                              onClick={() => togglePreviewExpand(group.itemDesc)}
+                            >
+                              {group.itemDesc}
+                            </span>
+                            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground">
+                              {group.poNumbers.length} {group.poNumbers.length > 1 ? 'POs' : 'PO'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-3.5"><UnitTotals totals={group.orderTotals} strong /></td>
+                        <td className="px-6 py-3.5"><UnitTotals totals={group.orderTotals} unitOnly /></td>
+                        <td className="px-6 py-3.5"><UnitTotals totals={group.deliveredTotals} strong /></td>
+                        <td className="px-6 py-3.5"><UnitTotals totals={group.deliveredTotals} unitOnly /></td>
+                        <td className="px-6 py-3.5 text-right">
+                          <button
+                            onClick={() => togglePreviewExpand(group.itemDesc)}
+                            className="text-xs text-primary hover:text-primary/80 font-medium inline-flex items-center gap-1 p-1 hover:bg-primary/10 rounded transition-colors"
+                          >
+                            {isExpanded ? 'Tutup' : 'Detail'}
+                            {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                          </button>
+                        </td>
+                      </tr>
+
+                      {/* Baris detail (level 2): satu baris = satu record item */}
+                      {isExpanded && group.items.map((record) => {
+                        const originalIndex = previewData.indexOf(record);
+                        return (
+                          <tr key={originalIndex} className="bg-muted/20 hover:bg-muted/35 transition-colors border-l-4 border-l-primary/60">
+                            <td className="px-6 py-2.5 font-medium whitespace-nowrap text-xs text-foreground">{safeFormatDate(record.planReceivedDate)}</td>
+                            {previewEditingIndex === originalIndex ? (
+                              <>
+                                <td className="px-6 py-2.5"><input type="text" className="w-full h-8 px-2 border rounded text-xs font-mono" placeholder="PO Number" value={previewEditForm.poNumber} onChange={(e) => setPreviewEditForm({ ...previewEditForm, poNumber: e.target.value })} /></td>
+                                <td className="px-6 py-2.5"><input type="text" className="w-full h-8 px-2 border rounded text-xs" value={previewEditForm.supplierName} onChange={(e) => setPreviewEditForm({ ...previewEditForm, supplierName: e.target.value })} /></td>
+                                <td className="px-6 py-2.5"><input type="text" className="w-full h-8 px-2 border rounded text-xs" value={previewEditForm.itemDesc} onChange={(e) => setPreviewEditForm({ ...previewEditForm, itemDesc: e.target.value })} /></td>
+                                <td className="px-6 py-2.5"><input type="number" step="any" className="w-full h-8 px-2 border rounded text-xs text-right" value={previewEditForm.qtyOrder} onChange={(e) => setPreviewEditForm({ ...previewEditForm, qtyOrder: e.target.value })} /></td>
+                                <td className="px-6 py-2.5">
+                                  <select className="w-full h-8 px-2 border rounded text-xs" value={previewEditForm.qtyOrderUnit} onChange={(e) => setPreviewEditForm({ ...previewEditForm, qtyOrderUnit: e.target.value })}>
+                                    <option value="kg">kg</option>
+                                    <option value="rim">rim</option>
+                                    <option value="sheets">sheets</option>
+                                  </select>
+                                </td>
+                                <td className="px-6 py-2.5"><input type="number" step="any" className="w-full h-8 px-2 border rounded text-xs text-right" value={previewEditForm.qtyDelivered} onChange={(e) => setPreviewEditForm({ ...previewEditForm, qtyDelivered: e.target.value })} /></td>
+                                <td className="px-6 py-2.5">
+                                  <select className="w-full h-8 px-2 border rounded text-xs" value={previewEditForm.qtyDeliveredUnit} onChange={(e) => setPreviewEditForm({ ...previewEditForm, qtyDeliveredUnit: e.target.value })}>
+                                    <option value="kg">kg</option>
+                                    <option value="rim">rim</option>
+                                    <option value="sheets">sheets</option>
+                                  </select>
+                                </td>
+                                <td className="px-6 py-2.5 text-right">
+                                  <div className="flex items-center justify-end gap-2">
+                                    <button onClick={() => handlePreviewSaveEdit(originalIndex)} className="p-1.5 text-green-600 hover:bg-green-50 rounded">
+                                      <Check className="w-4 h-4" />
+                                    </button>
+                                    <button onClick={() => setPreviewEditingIndex(null)} className="p-1.5 text-muted-foreground hover:bg-muted rounded"><X className="w-4 h-4" /></button>
+                                  </div>
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="px-6 py-2.5 font-mono text-xs font-semibold text-primary whitespace-nowrap">
+                                  {record.poNumber || <span className="text-destructive font-sans">(kosong)</span>}
+                                </td>
+                                <td className="px-6 py-2.5 text-xs text-muted-foreground">{record.supplierName}</td>
+                                <td className="px-6 py-2.5">
+                                  <div className="pl-6 flex items-center gap-2">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-primary/60 shrink-0" title={group.itemDesc}></span>
+                                  </div>
+                                </td>
+                                <td className="px-6 py-2.5 text-right text-xs font-bold text-foreground tabular-nums">{fmtQty(record.qtyOrder)}</td>
+                                <td className="px-6 py-2.5 text-center">
+                                  <span className="bg-secondary/60 text-secondary-foreground px-2 py-0.5 rounded text-[11px]">{record.qtyOrderUnit}</span>
+                                </td>
+                                <td className="px-6 py-2.5 text-right text-xs font-bold text-foreground tabular-nums">{fmtQty(record.qtyDelivered)}</td>
+                                <td className="px-6 py-2.5 text-center">
+                                  <span className="bg-secondary/60 text-secondary-foreground px-2 py-0.5 rounded text-[11px]">{record.qtyDeliveredUnit}</span>
+                                </td>
+                                <td className="px-6 py-2.5 text-right">
+                                  <div className="flex items-center justify-end gap-1">
+                                    <button onClick={() => handlePreviewEditClick(originalIndex, record)} className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded" title="Edit baris"><Pencil className="w-4 h-4" /></button>
+                                    <button onClick={() => handlePreviewDelete(originalIndex)} className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded" title="Hapus dari pratinjau">
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -516,14 +792,20 @@ export function OutstandingPO() {
                   className="md:col-span-12"
                 />
                 <div className="space-y-1.5 md:col-span-3">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase">
+                    PO Number <span className="text-destructive">*</span>
+                  </label>
+                  <input type="text" className="w-full h-10 px-3 border rounded-md text-sm font-mono" placeholder="mis. L1G000602" value={manualForm.poNumber} onChange={(e) => setManualForm({ ...manualForm, poNumber: e.target.value })} required />
+                </div>
+                <div className="space-y-1.5 md:col-span-3">
                   <label className="text-xs font-semibold text-muted-foreground uppercase">Plan Received Date</label>
                   <input type="date" className="w-full h-10 px-3 border rounded-md text-sm" value={manualForm.planReceivedDate} onChange={(e) => setManualForm({ ...manualForm, planReceivedDate: e.target.value })} required />
                 </div>
-                <div className="space-y-1.5 md:col-span-4">
+                <div className="space-y-1.5 md:col-span-3">
                   <label className="text-xs font-semibold text-muted-foreground uppercase">Supplier</label>
                   <input type="text" className="w-full h-10 px-3 border rounded-md text-sm" placeholder="Supplier Name" value={manualForm.supplierName} onChange={(e) => setManualForm({ ...manualForm, supplierName: e.target.value })} required />
                 </div>
-                <div className="space-y-1.5 md:col-span-5">
+                <div className="space-y-1.5 md:col-span-3">
                   <label className="text-xs font-semibold text-muted-foreground uppercase">Item Desc</label>
                   <input type="text" className="w-full h-10 px-3 border rounded-md text-sm" placeholder="Item Description" value={manualForm.itemDesc} onChange={(e) => setManualForm({ ...manualForm, itemDesc: e.target.value })} required />
                 </div>
@@ -650,9 +932,9 @@ export function OutstandingPO() {
                   </button>
                 )}
                 <div className="text-sm font-medium text-muted-foreground bg-background px-3 py-1.5 border rounded-md flex items-center gap-2">
-                  <span>{groupedByItem.length} Items</span>
+                  <span>{totalItems} Items</span>
                   <span className="text-muted-foreground/40">•</span>
-                  <span>{filteredRecords.length} POs</span>
+                  <span>{totalPos} POs</span>
                 </div>
               </div>
             </div>
@@ -665,6 +947,7 @@ export function OutstandingPO() {
                       <input type="checkbox" className="rounded border-gray-300 w-4 h-4" checked={filteredRecords.length > 0 && selectedIds.length === filteredRecords.length} onChange={handleSelectAll} />
                     </th>
                     <th className="px-6 py-4 font-semibold">Plan Date</th>
+                    <th className="px-6 py-4 font-semibold">PO Number</th>
                     <th className="px-6 py-4 font-semibold">Supplier</th>
                     <th className="px-6 py-4 font-semibold w-1/4">Item Desc</th>
                     <th className="px-6 py-4 font-semibold text-right">Qty Order</th>
@@ -677,14 +960,14 @@ export function OutstandingPO() {
                 <tbody className="divide-y">
                   {isLoading ? (
                     <tr>
-                      <td colSpan={9} className="px-6 py-12 text-center text-muted-foreground">
+                      <td colSpan={10} className="px-6 py-12 text-center text-muted-foreground">
                         <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
                         <p className="mt-2 text-sm font-medium">Memuat data...</p>
                       </td>
                     </tr>
                   ) : groupedByItem.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-6 py-12 text-center text-muted-foreground">
+                      <td colSpan={10} className="px-6 py-12 text-center text-muted-foreground">
                         <FileSpreadsheet className="w-12 h-12 mx-auto text-muted-foreground/30 mb-3" />
                         <p className="text-base font-semibold">Tidak ada data Outstanding PO</p>
                       </td>
@@ -698,7 +981,7 @@ export function OutstandingPO() {
 
                       return (
                         <Fragment key={group.itemDesc}>
-                          {/* Parent Group Row */}
+                          {/* Baris grup (level 1): satu ukuran / ITEM DESC */}
                           <tr className="hover:bg-muted/40 transition-colors bg-card font-medium border-b">
                             <td className="px-4 py-3.5 text-center">
                               <input
@@ -712,10 +995,11 @@ export function OutstandingPO() {
                               />
                             </td>
                             <td className="px-6 py-3.5 text-muted-foreground text-xs font-medium whitespace-nowrap">
-                              {group.items.length === 1
-                                ? format(new Date(group.items[0].planReceivedDate), 'dd MMM yyyy')
-                                : `${group.items.length} Plan Dates`}
+                              {group.planDateLabels.length === 1
+                                ? group.planDateLabels[0]
+                                : `${group.planDateLabels.length} Plan Dates`}
                             </td>
+                            <td className="px-6 py-3.5"><PoNumberBadges numbers={group.poNumbers} /></td>
                             <td className="px-6 py-3.5 text-muted-foreground text-xs">{group.supplierNames || '-'}</td>
                             <td className="px-6 py-3.5">
                               <div className="flex items-center gap-2">
@@ -733,27 +1017,16 @@ export function OutstandingPO() {
                                 <span className="font-bold text-foreground cursor-pointer hover:text-primary transition-colors" onClick={() => toggleExpand(group.itemDesc)}>
                                   {group.itemDesc}
                                 </span>
-                                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground">
-                                  {group.items.length} {group.items.length > 1 ? 'POs' : 'PO'}
+                                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-secondary text-secondary-foreground whitespace-nowrap">
+                                  {group.poNumbers.length} {group.poNumbers.length > 1 ? 'POs' : 'PO'}
                                 </span>
                               </div>
                             </td>
-                            <td className="px-6 py-3.5 text-right font-extrabold text-foreground text-sm">
-                              {group.totalQtyOrder.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 4 })}
-                            </td>
-                            <td className="px-6 py-3.5 text-center">
-                              <span className="bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded text-xs">
-                                {group.qtyOrderUnit}
-                              </span>
-                            </td>
-                            <td className="px-6 py-3.5 text-right font-extrabold text-foreground text-sm">
-                              {group.totalQtyDelivered.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 4 })}
-                            </td>
-                            <td className="px-6 py-3.5 text-center">
-                              <span className="bg-primary/10 text-primary font-semibold px-2.5 py-1 rounded text-xs">
-                                {group.qtyDeliveredUnit}
-                              </span>
-                            </td>
+                            {/* Total dihitung PER SATUAN — kg dan rim tidak dijumlahkan */}
+                            <td className="px-6 py-3.5"><UnitTotals totals={group.orderTotals} strong /></td>
+                            <td className="px-6 py-3.5"><UnitTotals totals={group.orderTotals} unitOnly /></td>
+                            <td className="px-6 py-3.5"><UnitTotals totals={group.deliveredTotals} strong /></td>
+                            <td className="px-6 py-3.5"><UnitTotals totals={group.deliveredTotals} unitOnly /></td>
                             <td className="px-6 py-3.5 text-right">
                               <button
                                 onClick={() => toggleExpand(group.itemDesc)}
@@ -765,9 +1038,9 @@ export function OutstandingPO() {
                             </td>
                           </tr>
 
-                          {/* Child Detailed Rows */}
+                          {/* Baris detail (level 2): satu baris = satu record item */}
                           {isExpanded &&
-                            group.items.map((record, idx) => (
+                            group.items.map((record) => (
                               <tr
                                 key={record.id}
                                 className="bg-muted/20 hover:bg-muted/35 transition-colors border-l-4 border-l-primary/60"
@@ -781,10 +1054,19 @@ export function OutstandingPO() {
                                   />
                                 </td>
                                 <td className="px-6 py-2.5 font-medium whitespace-nowrap text-xs text-foreground">
-                                  {format(new Date(record.planReceivedDate), 'dd MMM yyyy')}
+                                  {safeFormatDate(record.planReceivedDate)}
                                 </td>
                                 {editingId === record.id ? (
                                   <>
+                                    <td className="px-6 py-2.5">
+                                      <input
+                                        type="text"
+                                        className="w-full h-8 px-2 border rounded text-xs bg-background font-mono"
+                                        placeholder="PO Number"
+                                        value={editForm.poNumber}
+                                        onChange={(e) => setEditForm({ ...editForm, poNumber: e.target.value })}
+                                      />
+                                    </td>
                                     <td className="px-6 py-2.5">
                                       <input
                                         type="text"
@@ -861,23 +1143,27 @@ export function OutstandingPO() {
                                   </>
                                 ) : (
                                   <>
+                                    <td className="px-6 py-2.5 whitespace-nowrap">
+                                      <span className="font-mono text-xs font-semibold text-primary">
+                                        {record.poNumber || '—'}
+                                      </span>
+                                    </td>
                                     <td className="px-6 py-2.5 text-xs text-muted-foreground">{record.supplierName}</td>
                                     <td className="px-6 py-2.5">
-                                      <div className="pl-6 text-xs text-muted-foreground flex items-center gap-2">
-                                        <span className="w-1.5 h-1.5 rounded-full bg-primary/60 shrink-0"></span>
-                                        <span>PO #{idx + 1}</span>
+                                      <div className="pl-6 flex items-center gap-2">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-primary/60 shrink-0" title={group.itemDesc}></span>
                                       </div>
                                     </td>
-                                    <td className="px-6 py-2.5 text-right text-xs font-bold text-foreground">
-                                      {record.qtyOrder.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 4 })}
+                                    <td className="px-6 py-2.5 text-right text-xs font-bold text-foreground tabular-nums">
+                                      {fmtQty(record.qtyOrder)}
                                     </td>
                                     <td className="px-6 py-2.5 text-center text-xs text-muted-foreground">
                                       <span className="bg-secondary/60 text-secondary-foreground px-2 py-0.5 rounded text-[11px]">
                                         {record.qtyOrderUnit}
                                       </span>
                                     </td>
-                                    <td className="px-6 py-2.5 text-right text-xs font-bold text-foreground">
-                                      {record.qtyDelivered.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 4 })}
+                                    <td className="px-6 py-2.5 text-right text-xs font-bold text-foreground tabular-nums">
+                                      {fmtQty(record.qtyDelivered)}
                                     </td>
                                     <td className="px-6 py-2.5 text-center text-xs text-muted-foreground">
                                       <span className="bg-secondary/60 text-secondary-foreground px-2 py-0.5 rounded text-[11px]">
