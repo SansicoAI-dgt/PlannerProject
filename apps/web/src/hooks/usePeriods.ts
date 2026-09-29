@@ -11,6 +11,18 @@ import { fetchApi } from '../lib/api';
 
 export type PeriodSourceKey = 'MRP' | 'HOTLIST' | 'STOCK_RM' | 'OUTSTANDING_PO' | 'WIP';
 
+/**
+ * Modul pemilik data untuk tabel yang dipakai bersama secara tampilan
+ * (MRP 26 Weeks = `weekly_schedules`, WIP = `wips`).
+ * Data kedua modul disimpan TERPISAH lewat kolom `moduleType`.
+ */
+export type DataModule = 'PRODUCTION' | 'MATERIAL';
+
+export const MODULE_LABELS: Record<DataModule, string> = {
+  PRODUCTION: 'Production Planning',
+  MATERIAL: 'Material Planning',
+};
+
 export interface PeriodSummary {
   id: string;
   /** "2026-09" */
@@ -20,7 +32,10 @@ export interface PeriodSummary {
   isLocked: boolean;
   mrpStartDate: string | null;
   mrpEndDate: string | null;
+  /** Jumlah baris sumber modul MATERIAL (dipakai Material Calculation). */
   counts: Record<PeriodSourceKey, number>;
+  /** Jumlah baris MRP & WIP terpisah per modul (dipakai halaman Master Data). */
+  moduleCounts: Record<DataModule, { MRP: number; WIP: number }>;
 }
 
 export const PERIOD_QUERY_KEY = ['periods'];

@@ -1,19 +1,33 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
 import { authenticate, requireRole } from '../middleware/auth';
-import { resolveUploadPeriod, recordPeriodChange, touchPeriod } from '../lib/periodScope';
+import { EDIT_ROLES, canWriteModule, forbiddenModuleMessage, requireModuleAccess } from '../lib/permissions';
+import {
+  resolveUploadPeriod,
+  recordPeriodChange,
+  touchPeriod,
+  requireModuleType,
+  parseModuleType,
+  resolveModuleType,
+} from '../lib/periodScope';
 
 export default async function weeklyScheduleRoutes(server: FastifyInstance) {
-  // GET /api/v1/weekly-schedule — bisa difilter per periode: ?periodId=...
+  // GET /api/v1/weekly-schedule — bisa difilter per periode + modul:
+  //   ?periodId=...&moduleType=PRODUCTION|MATERIAL
+  // Kalau `moduleType` TIDAK dikirim, kedua modul dibaca (dipakai hanya untuk
+  // daftar referensi). Semua konsumen data wajib mengirimnya secara eksplisit.
   server.get('/api/v1/weekly-schedule', { preValidation: [authenticate] }, async (request, reply) => {
-    const { year, weekNumber, itemId, periodId } = request.query as {
+    const { year, weekNumber, itemId, periodId, moduleType } = request.query as {
       year?: string;
       weekNumber?: string;
       itemId?: string;
       periodId?: string;
+      moduleType?: string;
     };
 
+    const module = parseModuleType(moduleType);
     const where: any = {};
+    if (module) where.moduleType = module;
     if (periodId) where.periodId = periodId;
     if (year) where.year = parseInt(year);
     if (weekNumber) where.weekNumber = parseInt(weekNumber);
@@ -32,13 +46,15 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
   // W1 = first week whose weekStartDate >= today (today aligned to 00:00).
   server.get('/api/v1/weekly-schedule/summary', { preValidation: [authenticate] }, async (request, reply) => {
     // Ringkasan WAJIB per periode — tanpa ini demand beberapa bulan akan tercampur.
-    const { periodId } = request.query as { periodId?: string };
+    // moduleType menentukan modul mana yang dibaca (Production vs Material).
+    const { periodId, moduleType } = request.query as { periodId?: string; moduleType?: string };
     if (!periodId) {
       return reply.code(400).send({
         error: 'Bad Request',
         message: 'Parameter periodId wajib diisi. Pilih periode dulu.',
       });
     }
+    const module = resolveModuleType(moduleType);
 
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
@@ -46,7 +62,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
     // Fetch only schedules whose week has not ended yet (anchor = today).
     // Sorting by weekStartDate gives chronological order.
     const schedules = await prisma.weeklySchedule.findMany({
-      where: { periodId, weekStartDate: { gte: today } },
+      where: { periodId, moduleType: module, weekStartDate: { gte: today } },
       include: { item: true },
       orderBy: [{ weekStartDate: 'asc' }],
     });
@@ -91,13 +107,13 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       itemMap[s.itemId].total += s.quantity;
     }
 
-    return reply.send({ data: Object.values(itemMap), year: today.getFullYear() });
+    return reply.send({ data: Object.values(itemMap), year: today.getFullYear(), moduleType: module });
   });
 
   // POST /api/v1/weekly-schedule (single upsert)
   server.post(
     '/api/v1/weekly-schedule',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared), requireModuleAccess()] },
     async (request, reply) => {
       const body = request.body as any;
       const { year, weekNumber, weekStartDate, weekEndDate, itemId, itemCode, description, quantity, saveMode } = body;
@@ -112,6 +128,13 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
         return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
       }
       const { periodId } = resolved;
+
+      // Data MRP dipisah per modul — WAJIB, tidak ada default.
+      const moduleRes = requireModuleType(body.moduleType, 'Upload MRP 26 Weeks');
+      if (!moduleRes.ok) {
+        return reply.code(moduleRes.code).send({ error: 'Bad Request', message: moduleRes.message });
+      }
+      const { moduleType } = moduleRes;
 
       let finalItemId = itemId;
       if (!finalItemId && codeToUse) {
@@ -132,8 +155,9 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
 
       const existing = await prisma.weeklySchedule.findUnique({
         where: {
-          periodId_year_weekNumber_itemId: {
+          periodId_moduleType_year_weekNumber_itemId: {
             periodId,
+            moduleType,
             year: parseInt(year),
             weekNumber: parseInt(weekNumber),
             itemId: finalItemId,
@@ -148,8 +172,9 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
 
       const schedule = await prisma.weeklySchedule.upsert({
         where: {
-          periodId_year_weekNumber_itemId: {
+          periodId_moduleType_year_weekNumber_itemId: {
             periodId,
+            moduleType,
             year: parseInt(year),
             weekNumber: parseInt(weekNumber),
             itemId: finalItemId,
@@ -158,6 +183,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
         update: { quantity: newQty, weekStartDate: startDate, weekEndDate: endDate },
         create: {
           periodId,
+          moduleType,
           year: parseInt(year),
           weekNumber: parseInt(weekNumber),
           weekStartDate: startDate,
@@ -186,7 +212,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
   // POST /api/v1/weekly-schedule/bulk
   server.post(
     '/api/v1/weekly-schedule/bulk',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared), requireModuleAccess()] },
     async (request, reply) => {
       const body = request.body as any;
       const { records, saveMode } = body;
@@ -199,7 +225,16 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
         return reply.code(resolved.code).send({ error: 'Bad Request', message: resolved.message });
       }
       const { periodId } = resolved;
-      const previousCount = await prisma.weeklySchedule.count({ where: { periodId } });
+
+      // Data MRP dipisah per modul — WAJIB, tidak ada default.
+      const moduleRes = requireModuleType(body.moduleType, 'Upload MRP 26 Weeks');
+      if (!moduleRes.ok) {
+        return reply.code(moduleRes.code).send({ error: 'Bad Request', message: moduleRes.message });
+      }
+      const { moduleType } = moduleRes;
+
+      // Hitungan & penimpaan SELALU dibatasi ke periode + modul ini saja.
+      const previousCount = await prisma.weeklySchedule.count({ where: { periodId, moduleType } });
 
       const CHUNK_SIZE = 100;
 
@@ -268,6 +303,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
           await prisma.weeklySchedule.deleteMany({
             where: {
               periodId,
+              moduleType,
               year: scope.year,
               weekNumber: scope.weekNumber,
               itemId: { notIn: Array.from(scope.itemIds) }
@@ -279,7 +315,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       // ── Step 2: Fetch all existing schedules for the years in one query ──────
       const years = [...new Set(validRecords.map((r: any) => parseInt(r.year)))] as number[];
       const existingSchedules = await prisma.weeklySchedule.findMany({
-        where: { periodId, year: { in: years } },
+        where: { periodId, moduleType, year: { in: years } },
         select: { id: true, year: true, weekNumber: true, itemId: true, quantity: true },
       });
       const scheduleMap: Record<string, { id: string; quantity: number }> = {};
@@ -306,6 +342,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
         } else {
           toCreate.push({
             periodId,
+            moduleType,
             year: parseInt(r.year),
             weekNumber: parseInt(r.weekNumber),
             weekStartDate: startDate,
@@ -367,6 +404,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
         periodId,
         userId: request.user!.id,
         sourceType: 'MRP',
+        moduleType,
         rowCount: createdCount + updatedCount,
         replaced: previousCount,
         mode: saveMode === 'add' ? 'add' : 'overwrite',
@@ -377,6 +415,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       return reply.code(200).send({
         count: createdCount + updatedCount,
         periodId,
+        moduleType,
         label: resolved.label,
         replaced: previousCount,
         created: resolved.created,
@@ -387,7 +426,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
   // PUT /api/v1/weekly-schedule/:id
   server.put(
     '/api/v1/weekly-schedule/:id',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const { quantity, weekStartDate, weekEndDate } = request.body as any;
@@ -395,6 +434,11 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
       const existing = await prisma.weeklySchedule.findUnique({ where: { id } });
       if (!existing) {
         return reply.code(404).send({ error: 'Not Found', message: 'Weekly schedule not found' });
+      }
+
+      // Planner hanya boleh menyentuh baris milik modulnya sendiri.
+      if (!canWriteModule(request.user?.role, existing.moduleType)) {
+        return reply.code(403).send({ error: 'Forbidden', message: forbiddenModuleMessage(request.user?.role) });
       }
 
       const schedule = await prisma.weeklySchedule.update({
@@ -424,7 +468,7 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
   // DELETE /api/v1/weekly-schedule/bulk
   server.delete(
     '/api/v1/weekly-schedule/bulk',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared)] },
     async (request, reply) => {
       const ids = (request.body as { ids: string[] }).ids;
       if (!Array.isArray(ids) || ids.length === 0) {
@@ -433,8 +477,15 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
 
       const affected = await prisma.weeklySchedule.findMany({
         where: { id: { in: ids } },
-        select: { periodId: true },
+        select: { periodId: true, moduleType: true },
       });
+
+      // Planner tidak boleh menghapus data modul planner lain, walau id-nya
+      // dikirim langsung lewat API.
+      if (affected.some((s) => !canWriteModule(request.user?.role, s.moduleType))) {
+        return reply.code(403).send({ error: 'Forbidden', message: forbiddenModuleMessage(request.user?.role) });
+      }
+
       const periodIds = [...new Set(affected.map((s) => s.periodId))];
 
       await prisma.weeklySchedule.deleteMany({
@@ -460,12 +511,16 @@ export default async function weeklyScheduleRoutes(server: FastifyInstance) {
   // DELETE /api/v1/weekly-schedule/:id
   server.delete(
     '/api/v1/weekly-schedule/:id',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const existing = await prisma.weeklySchedule.findUnique({ where: { id } });
       if (!existing) {
         return reply.code(404).send({ error: 'Not Found', message: 'Data tidak ditemukan' });
+      }
+      // Planner hanya boleh menyentuh baris milik modulnya sendiri.
+      if (!canWriteModule(request.user?.role, existing.moduleType)) {
+        return reply.code(403).send({ error: 'Forbidden', message: forbiddenModuleMessage(request.user?.role) });
       }
       await prisma.weeklySchedule.delete({ where: { id } });
       await touchPeriod(existing.periodId);

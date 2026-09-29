@@ -7,8 +7,9 @@ import * as XLSX from 'xlsx';
 import { useAuthStore } from '../stores/authStore';
 
 export function FGStock() {
-  const { user } = useAuthStore();
-  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
+  const { canEdit } = useAuthStore();
+  // Production Planner & Admin boleh edit; Material Planner / User view-only.
+  const isAdmin = canEdit('production');
   
   const [showForm, setShowForm] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');

@@ -1,12 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { useWeeklyScheduleSummary, useBulkUpsertWeeklySchedule, useUpdateWeeklySchedule, useDeleteWeeklySchedule, useBulkDeleteWeeklySchedule } from '../hooks/useWeeklySchedule';
-import { usePeriods, useCreatePeriod, monthLabel } from '../hooks/usePeriods';
+import { usePeriods, useCreatePeriod, monthLabel, MODULE_LABELS, type DataModule } from '../hooks/usePeriods';
 import { PeriodSelect } from '../components/PeriodSelect';
+import { ModuleSelect } from '../components/ModuleSelect';
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
 import { Upload, Search, Save, Plus, CalendarRange, Trash2, ChevronLeft, ChevronRight, Calendar, Edit2, Folder, ArrowLeft, Lock, CalendarPlus, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { useAuthStore } from '../stores/authStore';
+import { useAuthStore, lockedDataModule } from '../stores/authStore';
 
 // Compute ISO week number / ISO year for a given date.
 // Used to build a unique (year, weekNumber) pair when manually adding demand.
@@ -114,9 +115,10 @@ function parse26WeekExcel(ws: XLSX.WorkSheet): { rows: ImportRow[]; year: number
 const WEEKS_PER_PAGE = 13; // Show 13 weeks at a time (half of 26)
 
 export function WeeklyDemand() {
-  const { user } = useAuthStore();
-  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
-  
+  const { user, canEditDataModule } = useAuthStore();
+  // Planner terkunci ke modulnya sendiri; Admin/Super Admin bebas memilih modul.
+  const lockedModule = lockedDataModule(user?.role) as DataModule | null;
+
   const currentYear = new Date().getFullYear();
   const [search, setSearch] = useState('');
   const [weekPage, setWeekPage] = useState(0);
@@ -128,6 +130,17 @@ export function WeeklyDemand() {
   const [importSearch, setImportSearch] = useState('');
   // Periode upload = keranjang data. WAJIB dipilih sebelum upload/isi manual.
   const [selectedPeriodId, setSelectedPeriodId] = useState<string | null>(null);
+  // Modul pemilik data MRP. Data Production Planning dan Material Planning
+  // disimpan TERPISAH — upload di sini hanya menyentuh modul yang dipilih.
+  // Planner TIDAK bebas memilih: modulnya dikunci ke modul miliknya.
+  const [moduleType, setModuleType] = useState<DataModule>(lockedModule ?? 'PRODUCTION');
+  // Jaga-jaga kalau role baru ter-rehydrate dari localStorage setelah mount.
+  React.useEffect(() => {
+    if (lockedModule && moduleType !== lockedModule) setModuleType(lockedModule);
+  }, [lockedModule, moduleType]);
+  // Gate edit: Admin/Super Admin selalu boleh; planner hanya untuk modulnya
+  // sendiri; User/Viewer tidak boleh. (Nama variabel dipertahankan.)
+  const isAdmin = canEditDataModule(moduleType);
   // Periode tujuan untuk modal Import / Isi Manual. Ikut periode yang sedang
   // dibuka, tapi tetap bisa diganti langsung dari dalam modal.
   const [targetPeriodId, setTargetPeriodId] = useState<string | null>(null);
@@ -160,7 +173,7 @@ export function WeeklyDemand() {
     quantity: 0,
   });
 
-  const { data: summaryData, isLoading } = useWeeklyScheduleSummary(selectedPeriodId);
+  const { data: summaryData, isLoading } = useWeeklyScheduleSummary(selectedPeriodId, moduleType);
   const { data: itemsData } = useItems();
   const createItem = useCreateItem();
   const bulkUpsert = useBulkUpsertWeeklySchedule();
@@ -390,10 +403,10 @@ export function WeeklyDemand() {
       return;
     }
     try {
-      const res: any = await bulkUpsert.mutateAsync({ records, saveMode, periodId: targetPeriodId });
+      const res: any = await bulkUpsert.mutateAsync({ records, saveMode, periodId: targetPeriodId, moduleType });
       setShowImport(false);
       setImportRows([]);
-      alert(`Berhasil import ${res?.count ?? records.length} data!`);
+      alert(`Berhasil import ${res?.count ?? records.length} data ke modul ${MODULE_LABELS[moduleType]}!`);
     } catch (err: any) {
       alert(err.message || 'Gagal menyimpan data.');
     }
@@ -451,7 +464,7 @@ export function WeeklyDemand() {
       return;
     }
     try {
-      await bulkUpsert.mutateAsync({ records, saveMode, periodId: targetPeriodId });
+      await bulkUpsert.mutateAsync({ records, saveMode, periodId: targetPeriodId, moduleType });
       setShowForm(false);
       setFormData({ itemId: '', startDate: getNextSaturdayISO(), endDate: getNextSaturdayISO(), quantity: 0 });
     } catch (err: any) {
@@ -487,11 +500,19 @@ export function WeeklyDemand() {
         </div>
       </div>
 
+      {/*
+        Pemisah modul: MRP 26 Weeks dipakai Production Planning DAN Material
+        Planning, tapi datanya disimpan terpisah. Semua baca/tulis di halaman ini
+        mengikuti pilihan di bawah.
+      */}
+      <ModuleSelect value={moduleType} onChange={setModuleType} lockedTo={lockedModule} />
+
       {/* Manual Add Form */}
       {showForm && (
         <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
           <h3 className="font-semibold mb-4 flex items-center gap-2"><Calendar size={18} /> Add Weekly Demand</h3>
           <p className="text-xs text-muted-foreground mb-4">Use "Save Add" to add to existing, or "Save Overwrite" to replace.</p>
+          <ModuleSelect value={moduleType} onChange={setModuleType} className="mb-5" lockedTo={lockedModule} />
           <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="mb-5 max-w-md" />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
             <div className="space-y-2">
@@ -589,7 +610,7 @@ export function WeeklyDemand() {
                     {p.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
                   </h3>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    {p.counts.MRP} baris MRP · {p.counts.WIP} WIP · {p.counts.HOTLIST} Hot List
+                    {p.moduleCounts[moduleType].MRP} baris MRP {MODULE_LABELS[moduleType]}
                   </p>
                 </div>
               </div>
@@ -838,6 +859,9 @@ export function WeeklyDemand() {
             </div>
 
             <div className="p-6 flex-1 overflow-auto space-y-5">
+              {/* Modul tujuan — data Production & Material disimpan terpisah */}
+              <ModuleSelect value={moduleType} onChange={setModuleType} lockedTo={lockedModule} />
+
               {/* Periode tujuan — wajib dipilih sebelum bisa menyimpan */}
               <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="max-w-md" />
 

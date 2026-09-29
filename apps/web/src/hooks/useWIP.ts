@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchApi } from '../lib/api';
-import { PERIOD_QUERY_KEY } from './usePeriods';
+import { PERIOD_QUERY_KEY, type DataModule } from './usePeriods';
 
 export interface WIP {
   id: string;
@@ -24,16 +24,19 @@ export interface WIP {
 }
 
 /**
- * Data WIP. Kalau `periodId` diberikan (selalu begitu di halaman WIP), data
- * difilter untuk periode itu saja. Tanpa `periodId` (mis. halaman Master Item
- * yang hanya memakai daftar nama lokasi) data diambil semua — angka WIP tidak
- * pernah ditampilkan di sana.
+ * Data WIP. Kalau `periodId` + `moduleType` diberikan (selalu begitu di halaman
+ * WIP), data difilter untuk periode + modul itu saja. Tanpa keduanya (mis.
+ * halaman Master Item yang hanya memakai daftar nama lokasi) kedua modul dibaca
+ * — angka WIP tidak pernah ditampilkan di sana.
  */
-export function useWIPs(periodId?: string | null) {
+export function useWIPs(periodId?: string | null, moduleType?: DataModule) {
+  const params = new URLSearchParams();
+  if (periodId) params.set('periodId', periodId);
+  if (moduleType) params.set('moduleType', moduleType);
+  const qs = params.toString();
   return useQuery<{ data: WIP[] }, Error>({
-    queryKey: ['wips', periodId ?? 'ALL'],
-    queryFn: () =>
-      fetchApi(periodId ? `/wip?periodId=${encodeURIComponent(periodId)}` : '/wip'),
+    queryKey: ['wips', periodId ?? 'ALL', moduleType ?? 'ALL'],
+    queryFn: () => fetchApi(qs ? `/wip?${qs}` : '/wip'),
   });
 }
 
@@ -52,6 +55,7 @@ export function useUpsertWIP() {
       notes?: string;
       saveMode?: 'overwrite' | 'add';
       periodId: string;
+      moduleType: DataModule;
     }) => 
       fetchApi('/wip', {
         method: 'POST',
@@ -108,7 +112,7 @@ export function useBulkUpsertWIP() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: (data: { records: any[]; saveMode?: 'overwrite' | 'add'; periodId: string }) => 
+    mutationFn: (data: { records: any[]; saveMode?: 'overwrite' | 'add'; periodId: string; moduleType: DataModule }) => 
       fetchApi('/wip/bulk', {
         method: 'POST',
         body: JSON.stringify(data),

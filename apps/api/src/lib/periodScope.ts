@@ -14,6 +14,59 @@ export type SourceType = (typeof SOURCE_TYPES)[number];
 
 export const RETENTION_MONTHS = 18;
 
+// ============================================================
+// PEMISAHAN MODUL (Production Planning vs Material Planning)
+// ============================================================
+// `weekly_schedules` (MRP 26 Weeks) dan `wips` dipakai oleh DUA modul secara
+// tampilan, tetapi datanya HARUS terpisah. Setiap baris menyimpan `moduleType`
+// dan semua query WAJIB memfilternya — jangan pernah membaca/menulis tanpa ini,
+// karena itu yang menyebabkan data satu modul menimpa modul lain.
+
+export const MODULE_TYPES = ['PRODUCTION', 'MATERIAL'] as const;
+export type DataModule = (typeof MODULE_TYPES)[number];
+
+export const MODULE_LABELS: Record<DataModule, string> = {
+  PRODUCTION: 'Production Planning',
+  MATERIAL: 'Material Planning',
+};
+
+/** Normalisasi nilai moduleType (case-insensitive). Null kalau tidak valid. */
+export function parseModuleType(value: unknown): DataModule | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim().toUpperCase();
+  return (MODULE_TYPES as readonly string[]).includes(v) ? (v as DataModule) : null;
+}
+
+/**
+ * Untuk endpoint TULIS: moduleType WAJIB. Sengaja tidak memakai default supaya
+ * tidak ada upload yang "diam-diam" masuk ke modul lain.
+ */
+export function requireModuleType(
+  value: unknown,
+  action: string,
+): { ok: true; moduleType: DataModule } | { ok: false; code: number; message: string } {
+  const moduleType = parseModuleType(value);
+  if (!moduleType) {
+    return {
+      ok: false,
+      code: 400,
+      message: `${action} memerlukan field \`moduleType\` bernilai "PRODUCTION" atau "MATERIAL" supaya data tidak tercampur antar modul.`,
+    };
+  }
+  return { ok: true, moduleType };
+}
+
+/**
+ * Untuk endpoint BACA: moduleType opsional dengan default MODULE_DEFAULT.
+ * Dipakai oleh endpoint lintas-modul lama (mis. tracking) yang belum/tidak
+ * mengirim moduleType — default-nya tetap modul Production.
+ */
+export const MODULE_DEFAULT: DataModule = 'PRODUCTION';
+
+export function resolveModuleType(value: unknown): DataModule {
+  return parseModuleType(value) ?? MODULE_DEFAULT;
+}
+
 const MONTH_NAMES_ID = [
   'Januari',
   'Februari',
@@ -175,11 +228,19 @@ function packSignature(
   };
 }
 
-/** Hitung checksum data master untuk SATU periode (5 query, tanpa ambil baris). */
-export async function computePeriodSignature(periodId: string): Promise<PeriodSignature> {
+/**
+ * Hitung checksum data master untuk SATU periode (5 query, tanpa ambil baris).
+ * `moduleType` menentukan data MRP & WIP MANA yang ikut dihitung — perhitungan
+ * Material Calculation memakai modul MATERIAL, sedangkan Production Planning
+ * memakai PRODUCTION. Sumber lain (Hotlist/Stock/PO) memang hanya milik Material.
+ */
+export async function computePeriodSignature(
+  periodId: string,
+  moduleType: DataModule = MODULE_DEFAULT,
+): Promise<PeriodSignature> {
   const [mrp, hotlist, stock, po, wip] = await Promise.all([
     prisma.weeklySchedule.aggregate({
-      where: { periodId },
+      where: { periodId, moduleType },
       _count: { _all: true },
       _sum: { quantity: true },
       _max: { updatedAt: true },
@@ -203,7 +264,7 @@ export async function computePeriodSignature(periodId: string): Promise<PeriodSi
       _max: { updatedAt: true },
     }),
     prisma.wIP.aggregate({
-      where: { periodId },
+      where: { periodId, moduleType },
       _count: { _all: true },
       _sum: { quantity: true },
       _max: { updatedAt: true },
@@ -257,12 +318,20 @@ export async function recordPeriodChange(params: {
   replaced?: number;
   fileName?: string | null;
   mode?: string;
+  /**
+   * Modul pemilik data (PRODUCTION | MATERIAL). Dipakai untuk label audit dan
+   * untuk memutuskan apakah rentang MRP periode (`mrpStartDate/mrpEndDate`)
+   * perlu diperbarui.
+   */
+  moduleType?: DataModule;
   mrpStartDate?: Date | null;
   mrpEndDate?: Date | null;
   notes?: string;
 }) {
   const now = new Date();
   const replaced = params.replaced ?? 0;
+  const moduleType = params.moduleType ?? MODULE_DEFAULT;
+  const moduleLabel = MODULE_LABELS[moduleType];
 
   await prisma.cycleSourceUpload.create({
     data: {
@@ -275,12 +344,18 @@ export async function recordPeriodChange(params: {
     },
   });
 
+  // `PlanningCycle.mrpStartDate/mrpEndDate` = dasar timeline Material Calculation,
+  // jadi HANYA boleh diisi oleh upload MRP modul MATERIAL. Upload MRP modul
+  // Production tidak boleh menggeser timeline perhitungan material.
+  const shouldUpdateMrpRange =
+    params.sourceType === 'MRP' && moduleType === 'MATERIAL';
+
   await prisma.planningCycle.update({
     where: { id: params.periodId },
     data: {
       lastUploadedAt: now,
       lastDataChangeAt: now,
-      ...(params.mrpStartDate && params.mrpEndDate
+      ...(shouldUpdateMrpRange && params.mrpStartDate && params.mrpEndDate
         ? { mrpStartDate: params.mrpStartDate, mrpEndDate: params.mrpEndDate }
         : {}),
     },
@@ -295,7 +370,7 @@ export async function recordPeriodChange(params: {
       entityType: 'CycleSourceUpload',
       notes:
         params.notes ??
-        `Upload ${params.sourceType}: ${params.rowCount} baris masuk, ${replaced} baris lama di periode ini diganti. Periode lain tidak terpengaruh.`,
+        `Upload ${params.sourceType} [${moduleLabel}]: ${params.rowCount} baris masuk, ${replaced} baris lama di periode ini diganti. Modul lain tidak terpengaruh.`,
     },
   });
 }

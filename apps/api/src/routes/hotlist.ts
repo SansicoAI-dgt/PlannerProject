@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireRole } from '../middleware/auth';
+import { EDIT_ROLES } from '../lib/permissions';
 import { resolveUploadPeriod, recordPeriodChange, touchPeriod } from '../lib/periodScope';
 import * as xlsx from 'xlsx';
 
@@ -16,7 +17,7 @@ export default async function hotlistRoutes(server: FastifyInstance) {
   });
 
   // Upload Excel
-  server.post('/api/v1/hotlist/upload', { preValidation: [authenticate] }, async (request, reply) => {
+  server.post('/api/v1/hotlist/upload', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     try {
       const data = await request.file();
       if (!data) {
@@ -109,7 +110,7 @@ export default async function hotlistRoutes(server: FastifyInstance) {
   });
 
   // Import (Save) dengan mode Add atau Overwrite — WAJIB menyertakan periode.
-  server.post('/api/v1/hotlist/import', { preValidation: [authenticate] }, async (request, reply) => {
+  server.post('/api/v1/hotlist/import', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const body = (request.body || {}) as {
       data?: { partNumber: string; date: string | Date; biTotal: number }[];
       mode?: 'add' | 'overwrite';
@@ -213,7 +214,7 @@ export default async function hotlistRoutes(server: FastifyInstance) {
   });
 
   // Add Manual — WAJIB menyertakan periode.
-  server.post('/api/v1/hotlist', { preValidation: [authenticate] }, async (request, reply) => {
+  server.post('/api/v1/hotlist', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const body = (request.body || {}) as any;
     const { partNumber, date, biTotal } = body;
 
@@ -257,7 +258,7 @@ export default async function hotlistRoutes(server: FastifyInstance) {
   });
 
   // Update
-  server.put('/api/v1/hotlist/:id', { preValidation: [authenticate] }, async (request, reply) => {
+  server.put('/api/v1/hotlist/:id', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const { partNumber, date, biTotal } = request.body as any;
 
@@ -280,7 +281,7 @@ export default async function hotlistRoutes(server: FastifyInstance) {
   });
 
   // Delete
-  server.delete('/api/v1/hotlist/:id', { preValidation: [authenticate] }, async (request, reply) => {
+  server.delete('/api/v1/hotlist/:id', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
 
     const existingHotlist = await prisma.hotlist.findUnique({ where: { id } });
@@ -295,7 +296,7 @@ export default async function hotlistRoutes(server: FastifyInstance) {
   });
 
   // Bulk Delete
-  server.post('/api/v1/hotlist/bulk-delete', { preValidation: [authenticate] }, async (request, reply) => {
+  server.post('/api/v1/hotlist/bulk-delete', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const { ids } = request.body as { ids: string[] };
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {

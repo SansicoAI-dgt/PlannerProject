@@ -14,8 +14,9 @@ export function NpofMaterials() {
   const syncMutation = useSyncNpofMaterials();
   const deleteMutation = useDeleteNpofMaterial();
   const bulkDeleteMutation = useBulkDeleteNpofMaterials();
-  const { user } = useAuthStore();
-  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
+  const { canEdit } = useAuthStore();
+  // Material Planner & Admin boleh edit; Production Planner / User view-only.
+  const isAdmin = canEdit('material');
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);

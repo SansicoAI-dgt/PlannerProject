@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
 import { authenticate, requireRole } from '../middleware/auth';
+import { EDIT_ROLES } from '../lib/permissions';
 
 export default async function dailyScheduleRoutes(server: FastifyInstance) {
   // Get all daily schedules
@@ -44,7 +45,7 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
   // Create or Update daily schedule (single record)
   server.post(
     '/api/v1/daily-schedule',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.production)] },
     async (request, reply) => {
       const { date, shift, itemId, itemCode, partNumber, quantity, saveMode } = request.body as any;
 
@@ -126,7 +127,7 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
   // Bulk upsert daily schedules
   server.post(
     '/api/v1/daily-schedule/bulk',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.production)] },
     async (request, reply) => {
       const { records, saveMode } = request.body as any;
       if (!Array.isArray(records) || records.length === 0) {
@@ -270,7 +271,7 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
   // Update daily schedule by ID
   server.put(
     '/api/v1/daily-schedule/:id',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.production)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const { date, shift, itemCode, partNumber, quantity } = request.body as any;
@@ -326,7 +327,7 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
   // Delete multiple daily schedules
   server.delete(
     '/api/v1/daily-schedule/bulk',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.production)] },
     async (request, reply) => {
       const { ids } = request.body as { ids: string[] };
       if (!Array.isArray(ids) || ids.length === 0) {
@@ -354,7 +355,7 @@ export default async function dailyScheduleRoutes(server: FastifyInstance) {
   // Delete daily schedule
   server.delete(
     '/api/v1/daily-schedule/:id',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.production)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
 

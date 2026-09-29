@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchApi } from '../lib/api';
-import { PERIOD_QUERY_KEY } from './usePeriods';
+import { PERIOD_QUERY_KEY, type DataModule } from './usePeriods';
 
 export interface WeeklyScheduleRecord {
   itemId: string;
@@ -19,15 +19,17 @@ export interface WeeklyScheduleRecord {
 }
 
 /**
- * Ringkasan MRP untuk SATU periode. `periodId` wajib — tanpa itu permintaan
- * tidak dijalankan supaya demand antar bulan tidak pernah tercampur.
+ * Ringkasan MRP untuk SATU periode + SATU modul. `periodId` dan `moduleType`
+ * wajib — tanpa itu demand antar bulan / antar modul akan tercampur.
  */
-export function useWeeklyScheduleSummary(periodId?: string | null) {
-  return useQuery<{ data: WeeklyScheduleRecord[]; year: number }, Error>({
-    queryKey: ['weeklySchedule', 'summary', periodId],
+export function useWeeklyScheduleSummary(periodId?: string | null, moduleType: DataModule = 'PRODUCTION') {
+  return useQuery<{ data: WeeklyScheduleRecord[]; year: number; moduleType: DataModule }, Error>({
+    queryKey: ['weeklySchedule', 'summary', periodId, moduleType],
     enabled: Boolean(periodId),
     queryFn: () =>
-      fetchApi(`/weekly-schedule/summary?periodId=${encodeURIComponent(periodId as string)}`),
+      fetchApi(
+        `/weekly-schedule/summary?periodId=${encodeURIComponent(periodId as string)}&moduleType=${moduleType}`,
+      ),
     staleTime: 1000 * 60,
   });
 }
@@ -47,6 +49,7 @@ export function useBulkUpsertWeeklySchedule() {
       }>;
       saveMode: 'overwrite' | 'add';
       periodId: string;
+      moduleType: DataModule;
     }) =>
       fetchApi('/weekly-schedule/bulk', {
         method: 'POST',
@@ -102,6 +105,7 @@ export function useUpsertWeeklySchedule() {
       quantity: number;
       saveMode?: 'overwrite' | 'add';
       periodId: string;
+      moduleType: DataModule;
     }) =>
       fetchApi('/weekly-schedule', {
         method: 'POST',

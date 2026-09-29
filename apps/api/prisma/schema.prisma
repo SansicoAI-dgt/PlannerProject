@@ -17,6 +17,8 @@ datasource db {
 enum UserRole {
   SUPER_ADMIN
   ADMIN
+  PRODUCTION_PLANNER
+  MATERIAL_PLANNER
   USER
 }
 
@@ -132,24 +134,28 @@ model DailySchedule {
 }
 
 model WeeklySchedule {
-  id            String   @id @default(cuid())
+  id            String     @id @default(cuid())
   periodId      String // periode UPLOAD (bukan tanggal di dalam data)
+  // Modul pemilik data. WAJIB: data Production Planning dan Material Planning
+  // tidak boleh saling memengaruhi (lihat migrasi 20260929000000_module_type).
+  moduleType    DataModule
   year          Int
   weekNumber    Int // 1-26
-  weekStartDate DateTime @db.Date
-  weekEndDate   DateTime @db.Date
+  weekStartDate DateTime   @db.Date
+  weekEndDate   DateTime   @db.Date
   itemId        String
   quantity      Float
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
 
   // Relations
   item   Item          @relation(fields: [itemId], references: [id], onDelete: Cascade)
   period PlanningCycle @relation(fields: [periodId], references: [id], onDelete: Cascade)
 
-  @@unique([periodId, year, weekNumber, itemId])
+  @@unique([periodId, moduleType, year, weekNumber, itemId])
   @@index([periodId])
-  @@index([periodId, year, weekNumber])
+  @@index([periodId, moduleType])
+  @@index([periodId, moduleType, year, weekNumber])
   @@index([itemId])
   @@map("weekly_schedules")
 }
@@ -189,9 +195,19 @@ enum WIPStatus {
   COMPLETED
 }
 
+// Pemilik data untuk tabel yang DIPAKAI BERSAMA secara tampilan
+// (MRP 26 Weeks, WIP). Setiap baris hanya boleh dibaca/ditulis oleh modul
+// pemiliknya, sehingga upload di satu modul tidak pernah mengubah modul lain.
+enum DataModule {
+  PRODUCTION // Production Planning
+  MATERIAL   // Material Planning
+}
+
 model WIP {
   id              String    @id @default(cuid())
   periodId        String // periode UPLOAD (bukan tanggal di dalam data)
+  // Modul pemilik data (PRODUCTION | MATERIAL). Lihat model WeeklySchedule.
+  moduleType      DataModule
   itemId          String
   location        String // Mesin-01, Assembly Line, etc.
   quantity        Float
@@ -209,12 +225,13 @@ model WIP {
   user   User          @relation(fields: [updatedBy], references: [id])
   period PlanningCycle @relation(fields: [periodId], references: [id], onDelete: Cascade)
 
-  @@unique([periodId, itemId, location]) // Unique per periode + item + location (overwrite)
+  @@unique([periodId, moduleType, itemId, location]) // Unique per periode + modul + item + location (overwrite)
   @@index([periodId])
+  @@index([periodId, moduleType])
   @@index([itemId])
   @@index([location])
   @@index([status])
-  @@index([periodId, date, shift])
+  @@index([periodId, moduleType, date, shift])
   @@map("wips")
 }
 

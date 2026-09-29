@@ -1,18 +1,26 @@
+/**
+ * Konfigurasi ini dipakai untuk PEMERIKSAAN TIPE (IDE + `npm run typecheck`).
+ * Sengaja mencakup skrip verifikasi di root (verify-*.ts) supaya mereka juga
+ * mendapat tipe @types/node — kalau tidak, editor memasukkan file itu ke
+ * "inferred project" tanpa `process` dan memunculkan error palsu.
+ *
+ * Untuk MENGHASILKAN build (dist/server.js) dipakai `tsconfig.build.json`,
+ * karena `rootDir` di sana harus tepat `./src`.
+ */
 {
   "compilerOptions": {
     "target": "ES2022",
     "module": "node16",
     "lib": ["ES2022"],
-    "outDir": "./dist",
-    "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "moduleResolution": "node16",
-    "types": ["node"]
+    "types": ["node"],
+    "noEmit": true
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "verify-*.ts"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }

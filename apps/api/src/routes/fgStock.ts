@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
 import { authenticate, requireRole } from '../middleware/auth';
+import { EDIT_ROLES } from '../lib/permissions';
 
 export default async function fgStockRoutes(server: FastifyInstance) {
   // Get all FG stocks
@@ -15,7 +16,7 @@ export default async function fgStockRoutes(server: FastifyInstance) {
   // Upsert FG stock
   server.post(
     '/api/v1/fg-stock',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.production)] },
     async (request, reply) => {
       const { itemId, itemCode, partNumber, quantity, date, notes, saveMode, unit } = request.body as any;
       const codeToUse = partNumber || itemCode;
@@ -85,7 +86,7 @@ export default async function fgStockRoutes(server: FastifyInstance) {
   // Bulk Upsert FG stock
   server.post(
     '/api/v1/fg-stock/bulk',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.production)] },
     async (request, reply) => {
       const { records, saveMode } = request.body as any;
       if (!Array.isArray(records) || records.length === 0) {
@@ -179,7 +180,7 @@ export default async function fgStockRoutes(server: FastifyInstance) {
   // Update FG stock by ID
   server.put(
     '/api/v1/fg-stock/:id',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.production)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const { quantity, date, notes } = request.body as any;
@@ -218,7 +219,7 @@ export default async function fgStockRoutes(server: FastifyInstance) {
   // Bulk Delete FG stock
   server.delete(
     '/api/v1/fg-stock/bulk',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.production)] },
     async (request, reply) => {
       const { ids } = request.body as { ids: string[] };
       if (!Array.isArray(ids) || ids.length === 0) {
@@ -246,7 +247,7 @@ export default async function fgStockRoutes(server: FastifyInstance) {
   // Delete FG stock by ID
   server.delete(
     '/api/v1/fg-stock/:id',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.production)] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
 

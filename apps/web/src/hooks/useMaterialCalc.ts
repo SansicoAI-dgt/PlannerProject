@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchApi } from '../lib/api';
+import type { DataModule } from './usePeriods';
 
 export interface PartNumberDetail {
   partNumber: string;
@@ -413,14 +414,27 @@ export const PERIOD_SOURCE_ENDPOINT: Record<string, string> = {
   OUTSTANDING_PO: '/outstanding-po',
 };
 
+/**
+ * MRP 26 Weeks dan WIP dipakai BERSAMA oleh Production Planning dan Material
+ * Planning, tetapi datanya disimpan TERPISAH. Material Calculation adalah bagian
+ * Material Planning, jadi kedua sumber ini WAJIB dibaca dengan
+ * `moduleType=MATERIAL` — kalau tidak, angka WIP/MRP Production akan ikut terhitung.
+ */
+const MODULE_SCOPED_SOURCES: Record<string, DataModule> = {
+  MRP: 'MATERIAL',
+  WIP: 'MATERIAL',
+};
+
 export function usePeriodSourceRows(cycleId: string | null, source: string | null) {
   return useQuery<{ data: any[] }, Error>({
     queryKey: ['material-planning-source-rows', cycleId, source],
     enabled: Boolean(cycleId && source && PERIOD_SOURCE_ENDPOINT[source]),
-    queryFn: () =>
-      fetchApi(
-        `${PERIOD_SOURCE_ENDPOINT[source as string]}?periodId=${encodeURIComponent(cycleId as string)}`,
-      ),
+    queryFn: () => {
+      const params = new URLSearchParams({ periodId: cycleId as string });
+      const mod = MODULE_SCOPED_SOURCES[source as string];
+      if (mod) params.set('moduleType', mod);
+      return fetchApi(`${PERIOD_SOURCE_ENDPOINT[source as string]}?${params.toString()}`);
+    },
     staleTime: 30 * 1000,
   });
 }

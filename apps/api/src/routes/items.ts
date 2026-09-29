@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
 import { authenticate, requireRole } from '../middleware/auth';
+import { EDIT_ROLES } from '../lib/permissions';
 
 export default async function itemsRoutes(server: FastifyInstance) {
   // Get all items
@@ -158,7 +159,10 @@ export default async function itemsRoutes(server: FastifyInstance) {
   // Create item
   server.post(
     '/api/v1/items',
-    { preValidation: [authenticate, requireRole(['SUPER_ADMIN', 'ADMIN'])] },
+    // Item dipakai bersama oleh kedua modul, dan halaman MRP/WIP/FG membuat
+    // part number BARU langsung dari form (inline). Jadi planner perlu boleh
+    // membuat item. Ubah/hapus item tetap Admin & Super Admin saja.
+    { preValidation: [authenticate, requireRole(EDIT_ROLES.shared)] },
     async (request, reply) => {
       const body = request.body as any;
       const partNumber = body.partNumber || body.itemCode;

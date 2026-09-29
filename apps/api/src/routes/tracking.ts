@@ -34,8 +34,8 @@ export default async function trackingRoutes(server: FastifyInstance) {
     const fgStockObj = await prisma.fGStock.findUnique({ where: { itemId: item.id } });
     const fgStock = fgStockObj?.quantity || 0;
 
-    // Get WIP
-    const wips = await prisma.wIP.findMany({ where: { itemId: item.id } });
+    // WIP modul PRODUCTION saja — WIP Material Planning disimpan terpisah.
+    const wips = await prisma.wIP.findMany({ where: { itemId: item.id, moduleType: 'PRODUCTION' } });
     const totalWip = wips.reduce((acc, curr) => acc + curr.quantity, 0);
 
     const { status, gap, totalSupply } = calculateItemStatus({ demand, fgStock, wip: totalWip });
@@ -99,7 +99,7 @@ export default async function trackingRoutes(server: FastifyInstance) {
       const fgStockObj = await prisma.fGStock.findUnique({ where: { itemId: item.id } });
       const fgStock = fgStockObj?.quantity || 0;
 
-      const wips = await prisma.wIP.findMany({ where: { itemId: item.id } });
+      const wips = await prisma.wIP.findMany({ where: { itemId: item.id, moduleType: 'PRODUCTION' } });
       const totalWip = wips.reduce((acc, curr) => acc + curr.quantity, 0);
 
       const { status, gap } = calculateItemStatus({ demand, fgStock, wip: totalWip });
@@ -160,6 +160,7 @@ export default async function trackingRoutes(server: FastifyInstance) {
     const fgStocks = await prisma.fGStock.findMany();
     const wips = await prisma.wIP.findMany({
       where: {
+        moduleType: 'PRODUCTION',
         status: { in: ['IN_PROGRESS', 'ON_HOLD', 'DELAYED'] }
       }
     });
@@ -168,6 +169,7 @@ export default async function trackingRoutes(server: FastifyInstance) {
     });
     const weeklySchedules = await prisma.weeklySchedule.findMany({
       where: {
+        moduleType: 'PRODUCTION',
         weekStartDate: { gte: targetDate }
       },
       orderBy: [{ weekStartDate: 'asc' }]

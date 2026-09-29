@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import bcrypt from 'bcryptjs';
 import prisma from '../lib/prisma';
 import { authenticate, requireRole } from '../middleware/auth';
+import { isUserRole, USER_ROLES } from '../lib/permissions';
 
 export default async function usersRoutes(server: FastifyInstance) {
   // Get all users (Super Admin only)
@@ -25,6 +26,16 @@ export default async function usersRoutes(server: FastifyInstance) {
 
       if (!name || !email || !password) {
         return reply.code(400).send({ error: 'Bad Request', message: 'Name, email, and password are required' });
+      }
+
+      // Validasi role SEBELUM menyentuh Prisma. Tanpa ini, nilai tak dikenal
+      // (mis. dari versi frontend lama) meledak jadi error 500 Prisma:
+      // "Invalid value for argument `role`. Expected UserRole."
+      if (role !== undefined && role !== null && !isUserRole(role)) {
+        return reply.code(400).send({
+          error: 'Bad Request',
+          message: `Role tidak valid. Pilihan yang tersedia: ${USER_ROLES.join(', ')}`,
+        });
       }
 
       const existingUser = await prisma.user.findUnique({ where: { email } });
@@ -55,6 +66,13 @@ export default async function usersRoutes(server: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params as { id: string };
       const { name, email, role, isActive } = request.body as any;
+
+      if (role !== undefined && role !== null && !isUserRole(role)) {
+        return reply.code(400).send({
+          error: 'Bad Request',
+          message: `Role tidak valid. Pilihan yang tersedia: ${USER_ROLES.join(', ')}`,
+        });
+      }
 
       const user = await prisma.user.findUnique({ where: { id } });
       if (!user) {

@@ -3,10 +3,11 @@ import { useWIPs, useUpsertWIP, useBulkUpsertWIP, useBulkDeleteWIP } from '../ho
 import { useItems, useCreateItem } from '../hooks/useItems';
 import { SearchableSelect } from '../components/SearchableSelect';
 import { Settings2, Plus, Save, Upload, Trash2, Search, Filter, Calendar, X, Folder, ArrowLeft, Lock, CalendarPlus, Loader2 } from 'lucide-react';
-import { usePeriods, useCreatePeriod, monthLabel } from '../hooks/usePeriods';
+import { usePeriods, useCreatePeriod, monthLabel, MODULE_LABELS, type DataModule } from '../hooks/usePeriods';
 import { PeriodSelect } from '../components/PeriodSelect';
+import { ModuleSelect } from '../components/ModuleSelect';
 import * as XLSX from 'xlsx';
-import { useAuthStore } from '../stores/authStore';
+import { useAuthStore, lockedDataModule } from '../stores/authStore';
 
 const WIP_SHEET_LOCATIONS = ['Blister', 'UV', 'Varnish OPP', 'Die Cut'];
 
@@ -17,9 +18,10 @@ function getWipUnit(location: string): 'Sheet' | 'Pcs' {
 }
 
 export function WIP() {
-  const { user } = useAuthStore();
-  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
-  
+  const { user, canEditDataModule } = useAuthStore();
+  // Planner terkunci ke modulnya sendiri; Admin/Super Admin bebas memilih modul.
+  const lockedModule = lockedDataModule(user?.role) as DataModule | null;
+
   const [showForm, setShowForm] = useState(false);
   
   // Periode upload = keranjang data. WAJIB dipilih sebelum upload/isi manual.
@@ -35,7 +37,18 @@ export function WIP() {
   const periods = periodsRes?.data ?? [];
   const selectedPeriod = periods.find((p) => p.id === selectedPeriodId) ?? null;
   const createPeriod = useCreatePeriod();
-  const { data: wipData, isLoading: loadingWIP } = useWIPs(selectedPeriodId);
+  // Modul pemilik data WIP. Data Production Planning dan Material Planning
+  // disimpan TERPISAH — upload/edit di sini hanya menyentuh modul yang dipilih.
+  // Planner TIDAK bebas memilih: modulnya dikunci ke modul miliknya.
+  const [moduleType, setModuleType] = useState<DataModule>(lockedModule ?? 'PRODUCTION');
+  // Jaga-jaga kalau role baru ter-rehydrate dari localStorage setelah mount.
+  useEffect(() => {
+    if (lockedModule && moduleType !== lockedModule) setModuleType(lockedModule);
+  }, [lockedModule, moduleType]);
+  // Gate edit: Admin/Super Admin selalu boleh; planner hanya untuk modulnya
+  // sendiri; User/Viewer tidak boleh. (Nama variabel dipertahankan.)
+  const isAdmin = canEditDataModule(moduleType);
+  const { data: wipData, isLoading: loadingWIP } = useWIPs(selectedPeriodId, moduleType);
 
   const handleCreatePeriod = async () => {
     if (!newPeriodMonth) return;
@@ -214,6 +227,7 @@ export function WIP() {
         records: importData,
         saveMode,
         periodId: targetPeriodId,
+        moduleType,
       });
       setShowImportModal(false);
       setImportData([]);
@@ -262,6 +276,7 @@ export function WIP() {
         progressPercent: Number(formData.progressPercent),
         saveMode,
         periodId: targetPeriodId,
+        moduleType,
       });
       setShowForm(false);
       setFormData(prev => ({ ...prev, itemId: '', quantity: 0, progressPercent: 0, notes: '' }));
@@ -276,8 +291,7 @@ export function WIP() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Work In Progress (WIP)</h2>
           <p className="text-muted-foreground text-sm">Manage items currently in production stages.</p>
-        </div>
-        <div className="flex gap-2">
+        </div>        <div className="flex gap-2">
           {isAdmin && (
             <button 
               onClick={() => setShowImportModal(true)}
@@ -299,6 +313,13 @@ export function WIP() {
         </div>
       </div>
 
+      {/*
+        Pemisah modul: WIP dipakai Production Planning DAN Material Planning,
+        tapi datanya disimpan terpisah. Semua baca/tulis di halaman ini
+        mengikuti pilihan di bawah.
+      */}
+      <ModuleSelect value={moduleType} onChange={setModuleType} lockedTo={lockedModule} />
+
       {showForm && (
         <div className="bg-card text-card-foreground border rounded-lg p-6 shadow-sm">
           <h3 className="font-semibold mb-4 flex items-center gap-2">
@@ -307,6 +328,7 @@ export function WIP() {
           <p className="text-xs text-muted-foreground mb-4">Note: Providing an update for the same Item + Location will OVERWRITE its current WIP data.</p>
           
           <form className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-start">
+            <ModuleSelect value={moduleType} onChange={setModuleType} className="lg:col-span-4" lockedTo={lockedModule} />
             <PeriodSelect
               value={targetPeriodId}
               onChange={setTargetPeriodId}
@@ -403,7 +425,7 @@ export function WIP() {
                     {p.isLocked && <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />}
                   </h3>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    {p.counts.WIP} Baris WIP · {p.counts.MRP} baris MRP
+                    {p.moduleCounts[moduleType].WIP} Baris WIP {MODULE_LABELS[moduleType]}
                   </p>
                 </div>
               </div>
@@ -633,6 +655,8 @@ export function WIP() {
             </div>
             
             <div className="p-6 flex-1 overflow-auto space-y-4">
+              {/* Modul tujuan — data Production & Material disimpan terpisah */}
+              <ModuleSelect value={moduleType} onChange={setModuleType} lockedTo={lockedModule} />
               <PeriodSelect value={targetPeriodId} onChange={setTargetPeriodId} className="max-w-md" />
 
               <div className="flex items-center gap-4">

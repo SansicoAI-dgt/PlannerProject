@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireRole } from '../middleware/auth';
+import { EDIT_ROLES } from '../lib/permissions';
 import { resolveUploadPeriod, recordPeriodChange, touchPeriod } from '../lib/periodScope';
 import * as xlsx from 'xlsx';
 
@@ -112,7 +113,7 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
   });
 
   // Upload Excel
-  server.post('/api/v1/outstanding-po/upload', { preValidation: [authenticate] }, async (request, reply) => {
+  server.post('/api/v1/outstanding-po/upload', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     try {
       const data = await request.file();
       if (!data) {
@@ -364,7 +365,7 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
   });
 
   // Import (Save) dengan mode Add atau Overwrite — WAJIB menyertakan periode.
-  server.post('/api/v1/outstanding-po/import', { preValidation: [authenticate] }, async (request, reply) => {
+  server.post('/api/v1/outstanding-po/import', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const body = (request.body || {}) as {
       data?: any[];
       mode?: 'add' | 'overwrite';
@@ -461,7 +462,7 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
   });
 
   // Add Manual — WAJIB menyertakan periode.
-  server.post('/api/v1/outstanding-po', { preValidation: [authenticate] }, async (request, reply) => {
+  server.post('/api/v1/outstanding-po', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const body = (request.body || {}) as any;
     const { poNumber, planReceivedDate, supplierName, itemDesc, qtyOrder, qtyOrderUnit, qtyDelivered, qtyDeliveredUnit } = body;
 
@@ -496,7 +497,7 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
   });
 
   // Update
-  server.put('/api/v1/outstanding-po/:id', { preValidation: [authenticate] }, async (request, reply) => {
+  server.put('/api/v1/outstanding-po/:id', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const { poNumber, planReceivedDate, supplierName, itemDesc, qtyOrder, qtyOrderUnit, qtyDelivered, qtyDeliveredUnit } = request.body as any;
 
@@ -528,7 +529,7 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
   });
 
   // Delete
-  server.delete('/api/v1/outstanding-po/:id', { preValidation: [authenticate] }, async (request, reply) => {
+  server.delete('/api/v1/outstanding-po/:id', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
 
     const existing = await prisma.outstandingPO.findUnique({ where: { id } });
@@ -543,7 +544,7 @@ export default async function outstandingPoRoutes(server: FastifyInstance) {
   });
 
   // Bulk Delete
-  server.post('/api/v1/outstanding-po/bulk-delete', { preValidation: [authenticate] }, async (request, reply) => {
+  server.post('/api/v1/outstanding-po/bulk-delete', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const { ids } = request.body as { ids: string[] };
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {

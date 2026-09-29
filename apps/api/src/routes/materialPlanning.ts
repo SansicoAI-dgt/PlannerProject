@@ -2,8 +2,13 @@ import { FastifyInstance, FastifyRequest } from 'fastify';
 import prisma from '../lib/prisma';
 import { config } from '../config';
 import { authenticate, requireRole } from '../middleware/auth';
+import { EDIT_ROLES } from '../lib/permissions';
 import { computePeriodSignature, compareSignature } from '../lib/periodScope';
 import { runMaterialCalculation, type MaterialCalcSource } from '../lib/materialCalcEngine';
+
+// Material Planning HANYA membaca data milik modul MATERIAL.
+// MRP & WIP Production Planning disimpan terpisah (kolom `moduleType`).
+const MATERIAL = 'MATERIAL' as const;
 
 /**
  * Route Material Planning berbasis PERIODE (PlanningCycle).
@@ -58,13 +63,31 @@ function uploadMonthOf(date: Date): string {
  */
 async function countPeriodRows(periodId: string): Promise<Record<SourceType, number>> {
   const [mrp, hotlist, stock, po, wip] = await Promise.all([
-    prisma.weeklySchedule.count({ where: { periodId } }),
+    prisma.weeklySchedule.count({ where: { periodId, moduleType: MATERIAL } }),
     prisma.hotlist.count({ where: { periodId } }),
     prisma.stockRawMaterial.count({ where: { periodId } }),
     prisma.outstandingPO.count({ where: { periodId } }),
-    prisma.wIP.count({ where: { periodId } }),
+    prisma.wIP.count({ where: { periodId, moduleType: MATERIAL } }),
   ]);
   return { MRP: mrp, HOTLIST: hotlist, STOCK_RM: stock, OUTSTANDING_PO: po, WIP: wip };
+}
+
+/**
+ * Jumlah baris MRP & WIP TERPISAH per modul. Dipakai halaman Master Data
+ * (26-Week Demand & WIP) supaya angka yang ditampilkan sesuai modul yang
+ * sedang dibuka, bukan gabungan kedua modul.
+ */
+async function countModuleRows(periodId: string) {
+  const [prodMrp, matMrp, prodWip, matWip] = await Promise.all([
+    prisma.weeklySchedule.count({ where: { periodId, moduleType: 'PRODUCTION' } }),
+    prisma.weeklySchedule.count({ where: { periodId, moduleType: 'MATERIAL' } }),
+    prisma.wIP.count({ where: { periodId, moduleType: 'PRODUCTION' } }),
+    prisma.wIP.count({ where: { periodId, moduleType: 'MATERIAL' } }),
+  ]);
+  return {
+    PRODUCTION: { MRP: prodMrp, WIP: prodWip },
+    MATERIAL: { MRP: matMrp, WIP: matWip },
+  };
 }
 
 function addMonths(date: Date, months: number): Date {
@@ -134,7 +157,9 @@ async function writeAudit(params: {
 // periode. Perhitungan cukup membaca tabel Master Data dengan filter `periodId`.
 
 export default async function materialPlanningRoutes(server: FastifyInstance) {
-  const editor = [authenticate, requireRole(['ADMIN'])];
+  // Editor Material Planning: Admin, Super Admin, dan Material Planner.
+  // Production Planner TIDAK boleh mengubah data material.
+  const editor = [authenticate, requireRole(EDIT_ROLES.material)];
   const superOnly = [authenticate, requireRole(['SUPER_ADMIN'])];
 
   // ══════════════════════════════════════════════════════════════════════
@@ -156,7 +181,10 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
         isLocked: c.isLocked,
         mrpStartDate: c.mrpStartDate,
         mrpEndDate: c.mrpEndDate,
+        // counts = sumber modul MATERIAL (dipakai Material Calculation)
         counts: await countPeriodRows(c.id),
+        // counts terpisah Production vs Material (dipakai halaman Master Data)
+        moduleCounts: await countModuleRows(c.id),
       })),
     );
     return reply.send({ data });
@@ -425,7 +453,7 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
       },
     });
 
-    const currentSignature = await computePeriodSignature(id);
+    const currentSignature = await computePeriodSignature(id, MATERIAL);
     const diff = compareSignature(current?.dataSignature ?? null, currentSignature);
 
     // Cadangan untuk perhitungan lama yang belum punya checksum: bandingkan cap waktu.
@@ -489,18 +517,19 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
     // Sejak 2026-09-28 data periode dibaca LANGSUNG dari tabel Master Data
     // (difilter periodId) — tidak ada lagi tabel snapshot Cycle*.
     const [mrpRows, hotlists, stocks, pos, wips, npofs] = await Promise.all([
-      prisma.weeklySchedule.findMany({ where: { periodId: id }, include: { item: true } }),
+      prisma.weeklySchedule.findMany({ where: { periodId: id, moduleType: MATERIAL }, include: { item: true } }),
       prisma.hotlist.findMany({ where: { periodId: id } }),
       prisma.stockRawMaterial.findMany({ where: { periodId: id }, orderBy: { date: 'desc' } }),
       prisma.outstandingPO.findMany({ where: { periodId: id } }),
-      prisma.wIP.findMany({ where: { periodId: id }, include: { item: true } }),
+      prisma.wIP.findMany({ where: { periodId: id, moduleType: MATERIAL }, include: { item: true } }),
       prisma.npofMaterial.findMany(), // global, dipakai bersama semua periode
     ]);
 
     if (mrpRows.length === 0) {
       return reply.code(400).send({
         error: 'Bad Request',
-        message: 'Periode ini belum punya data MRP. Upload data MRP dulu di halaman Master Data.',
+        message:
+          'Periode ini belum punya data MRP untuk Material Planning. Upload data MRP 26 Weeks di halaman Master Data dengan modul "Material Planning" dipilih.',
       });
     }
 
@@ -558,7 +587,7 @@ export default async function materialPlanningRoutes(server: FastifyInstance) {
 
     // Checksum data master tepat sebelum hasil disimpan — dasar validasi
     // "Calculation tidak valid karena ada perubahan data".
-    const signature = await computePeriodSignature(id);
+    const signature = await computePeriodSignature(id, MATERIAL);
 
     const created = await prisma.$transaction(async (tx) => {
       // Siklus hidup hasil (rancangan §4.1.5):

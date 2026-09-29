@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../lib/prisma';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireRole } from '../middleware/auth';
+import { EDIT_ROLES } from '../lib/permissions';
 import { config } from '../config';
 
 export default async function npofMaterialsRoutes(server: FastifyInstance) {
@@ -16,7 +17,7 @@ export default async function npofMaterialsRoutes(server: FastifyInstance) {
   });
 
   // Sync from External API
-  server.post('/api/v1/npof-materials/sync', { preValidation: [authenticate] }, async (request, reply) => {
+  server.post('/api/v1/npof-materials/sync', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     try {
       let externalData: any[] = [];
 
@@ -143,7 +144,7 @@ export default async function npofMaterialsRoutes(server: FastifyInstance) {
   });
 
   // Edit (Update) Manual
-  server.put('/api/v1/npof-materials/:id', { preValidation: [authenticate] }, async (request, reply) => {
+  server.put('/api/v1/npof-materials/:id', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const { partNumber, productName, material, gramatur, supplier, sheetedSize, formulaMaterial, ups } = request.body as any;
 
@@ -171,7 +172,7 @@ export default async function npofMaterialsRoutes(server: FastifyInstance) {
   });
 
   // Delete
-  server.delete('/api/v1/npof-materials/:id', { preValidation: [authenticate] }, async (request, reply) => {
+  server.delete('/api/v1/npof-materials/:id', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const { id } = request.params as { id: string };
 
     const existing = await prisma.npofMaterial.findUnique({ where: { id } });
@@ -185,7 +186,7 @@ export default async function npofMaterialsRoutes(server: FastifyInstance) {
   });
 
   // Bulk Delete
-  server.post('/api/v1/npof-materials/bulk-delete', { preValidation: [authenticate] }, async (request, reply) => {
+  server.post('/api/v1/npof-materials/bulk-delete', { preValidation: [authenticate, requireRole(EDIT_ROLES.material)] }, async (request, reply) => {
     const { ids } = request.body as { ids: string[] };
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {

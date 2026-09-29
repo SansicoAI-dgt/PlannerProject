@@ -39,6 +39,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { id as indonesianLocale } from 'date-fns/locale';
+import { usePeriods } from '../hooks/usePeriods';
 
 // ── Format angka & tanggal ────────────────────────────────────────────────
 
@@ -627,6 +628,17 @@ export function MaterialCalc() {
   );
   const cycleId = activeCycle?.id ?? null;
 
+  /**
+   * Jumlah baris NYATA tiap sumber di periode ini (endpoint /material-planning/periods),
+   * bukan riwayat upload — data bisa berkurang setelah upload (edit/hapus manual),
+   * sehingga angka riwayat upload akan menyesatkan.
+   */
+  const { data: periodsData } = usePeriods();
+  const liveCounts = useMemo(
+    () => periodsData?.data.find((p) => p.id === cycleId)?.counts ?? null,
+    [periodsData, cycleId],
+  );
+
   const { data: npofCheck } = useNpofCheck(cycleId, Boolean(activeCycle?.currentResult));
   const { data: expiredData } = useExpiredCycles();
 
@@ -951,7 +963,10 @@ export function MaterialCalc() {
               </button>
 
               {(['MRP', 'WIP', 'HOTLIST', 'STOCK_RM', 'OUTSTANDING_PO'] as const).map((key) => {
-                const rowCount = activeCycle.sources.find((s: CycleSourceRow) => s.sourceType === key)?.rowCount ?? 0;
+                const rowCount =
+                  liveCounts?.[key] ??
+                  activeCycle.sources.find((s: CycleSourceRow) => s.sourceType === key)?.rowCount ??
+                  0;
                 return (
                   <button
                     key={key}

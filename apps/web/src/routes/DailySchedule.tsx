@@ -404,8 +404,9 @@ function parseFAAttachSheet(ws: XLSX.WorkSheet): ImportRecord[] {
 }
 
 export function DailySchedule() {
-  const { user } = useAuthStore();
-  const isAdmin = user?.role === 'SUPER_ADMIN' || user?.role === 'ADMIN';
+  const { canEdit } = useAuthStore();
+  // Production Planner & Admin boleh edit; Material Planner / User view-only.
+  const isAdmin = canEdit('production');
   
   const [filterDate, setFilterDate] = useState(() => {
     const d = new Date();
